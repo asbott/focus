@@ -457,9 +457,15 @@ directory_scan_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void
     for path : << file_range {
         auto_release_temp();
         if !should_ignore_file(path) {
-            buffer_id, created := find_or_create_buffer(path);
+            buffer_id, created := find_or_create_buffer(path, tokenize=false);
             if !created then reload_from_disk(buffer_id, force = true);  // when refreshing workspace we want up to date data from disk
         }
+    }
+    
+    lock(*open_buffers_lock);
+    defer unlock(*open_buffers_lock);
+    for *open_buffers {
+        retokenize(it);
     }
 
     return .CONTINUE;

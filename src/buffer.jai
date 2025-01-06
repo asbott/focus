@@ -498,9 +498,15 @@ rescan_for_wrapped_lines :: (editor: *Editor, buffer: Buffer) {
 retokenize :: (buffer: *Buffer) {
     lock(*buffer.content_lock);
     defer unlock(*buffer.content_lock);
-
+    
+    log("Tokenizing %:", buffer.file.full_path);
+    
     assert(!buffer.dirty);
     buffer.needs_tokenizing = false;
+
+    buffer.word_tree = .{};
+    bucket_array_reset(*buffer.word_node_buffer);
+    reset_keeping_memory(*buffer.included_buffer_indices);
 
     if buffer.lang == .Plain_Text {
         // We don't store tokens for plain text buffers
@@ -522,6 +528,8 @@ retokenize :: (buffer: *Buffer) {
     for buffer.regions free(it.note);
     reset_keeping_memory(*buffer.regions);
 
+
+
     for * region : new_regions {
         // Add regions into buffer
         if region.note then region.note = copy_string(region.note);
@@ -533,6 +541,29 @@ retokenize :: (buffer: *Buffer) {
             if tokenize_func != null then tokenize_func(buffer, region.start, region.end - region.start);  // ignore subregions here
         }
     }
+    
+    print_node :: (buffer: *Buffer, node: *Word_Node, buf: *u8, depth: s64) {
+        if (node == null) return;
+    
+        // If next[0] is non-null, we have a completed word
+        if (node.next[0] != 0xffff) {
+            word := string.{ depth, buf };
+            print("%\n", word);
+        }
+    
+        // Go through each possible child index
+        for i : 1..node.next.count-1 {
+            if (node.next[i] != 0xffff) {
+                child := *buffer.word_node_buffer[node.next[i]];
+                buf[depth] = char_index_az(i);
+                //print("->%", string.{ 1, buf + depth });
+                print_node(buffer, child, buf, depth + 1);
+            }
+        }
+    }
+    // Print words for debug
+    buf: [256]u8;
+    print_node(buffer, *buffer.word_tree, buf.data, 0);
 }
 
 buffer_needs_tokenizing :: (buffer: Buffer) -> bool {
@@ -1137,7 +1168,7 @@ find_or_create_an_empty_buffer :: () -> buffer_id: s64, created: bool {
     return buffer_id, true;
 }
 
-find_or_create_buffer :: (path: string) -> buffer_id: s64, created: bool {
+find_or_create_buffer :: (path: string, tokenize := true) -> buffer_id: s64, created: bool {
     #if OS == .WINDOWS {
         if path.count > 248 return -1, false;  // Windows bad
     }
@@ -1192,7 +1223,7 @@ find_or_create_buffer :: (path: string) -> buffer_id: s64, created: bool {
     buffer.meow_hash = calculate_hash(to_view(buffer.bytes));
 
     rescan_for_lines(buffer);
-    retokenize(buffer);
+    if tokenize  retokenize(buffer);
 
     recalculate_settings(buffer);
 
@@ -1508,6 +1539,9 @@ free_buffer :: (using buffer: *Buffer) {
 
     free_buffer_extra(extra);
     extra = null;
+    
+    bucket_array_reset(*buffer.word_node_buffer);
+    reset(*buffer.included_buffer_indices);
 }
 
 free_buffer_extra :: (extra: *Buffer.Extra) {
@@ -1547,6 +1581,8 @@ get_range_as_string :: (buffer: Buffer, range: Offset_Range) -> string {
 
 init_buffer :: (using buffer: *Buffer) {
     init(*content_lock);
+    buffer.word_tree = .{};
+    assert(buffer.word_tree.next[0] == 0xffff);
 }
 
 get_unsaved_buffer_ids :: () -> [] s64 /* temp */ {
@@ -1720,12 +1756,86 @@ deinit :: (using edit_group: *Buffer.Edit_Group) {
 
 buffer_edit_notifications: Array(Buffer.Edit_Notification);
 
+Word_Node :: struct {
+    // a-z*2 + 0-9 + 1 for null terminator + 1 for _
+    // u32 index into word_node_buffer
+    next: [80]u16 = #run -> [80]u16 { n: [80]u16; for * n  it.* = 0xffff; return n; }; 
+}
 
+az_char_index :: (char: u8) -> int {
+    if (char >= #char "0" && char <= #char "9") {
+        return char - #char "0" + 1;
+    } else if (char >= #char "a" && char <= #char "z") {
+        return (#char "9" - #char "0") + 1 + (char - #char "a") + 1;
+    } else if (char >= #char "A" && char <= #char "Z") {
+        return (#char "9" - #char "0") + 27 + (char - #char "A") + 1;
+    } else if (char == #char "_") {
+        return 79;
+    } else {
+        return -1;
+    }
+}
+char_index_az :: (i: int) -> u8 {
+    if (i >= 1 && i <= 10) {
+        return #char "0" +  cast(u8)i - 1;
+    } else if (i >= 11 && i <= 36) {
+        return #char "a" + cast(u8)i - 11;
+    } else if (i == 79) {
+        return #char "_";
+    } else {
+        return #char "A" + cast(u8)i - 37;
+    }
+}
+
+is_defined_word :: (using buffer: *Buffer, word: string, buffer_index_stack: *[..]s64 = null) -> bool {
+    if word.count == 0 return false;
+    if !word return false;
+
+    if (!buffer_index_stack)
+        buffer_index_stack = New([..]s64,,temp);
+
+    c := word.data[0];
+
+    node := *word_tree;
+    full_match := true;
+    for word {
+        index := az_char_index(it);
+        if index == -1  return false;
+        if node.next[index] == 0xffff {
+            full_match = false;
+            break;
+        }
+        node = *buffer.word_node_buffer[node.next[index]];
+    }
+
+    // If end right before null termination, this is a valid defined word.
+    if full_match && node.next[0] != 0xffff {
+        return true;
+    }
+
+    // If not found in buffer, see if in any included (and open) buffer
+    for included_buffer_indices {
+        if array_find(buffer_index_stack.*, it)
+            continue;
+        array_add(buffer_index_stack, it,, temp);
+        if is_defined_word(*open_buffers[it], word, buffer_index_stack)
+            return true;
+    }
+
+
+
+    return false;
+}
+#import "Bucket_Array";
 Buffer :: struct {
     bytes:       Array(u8);
     line_starts: Array(s32);       // real offsets of newlines in the bytes array
     tokens:      Array(Token_Type);     // we assign a token to each byte (even for multi-byte chars).
     regions:     Array(Buffer_Region); // for highlighting parts of buffer
+
+    word_tree: Word_Node;
+    word_node_buffer: Bucket_Array(Word_Node, 4096);
+    included_buffer_indices: Array(s64);
 
     // @Memory: all of these are allocated on the heap, which is not great, but it works fine right now.
     // Eventually we'll want to revisit all this and make it not allocate as much.

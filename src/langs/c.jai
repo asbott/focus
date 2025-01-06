@@ -3,26 +3,188 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
 
     // Allocate temporary space for tracking one previous token
     tokenizer.prev_tokens[0] = New(Token,, temp);
+	tokenizer.prev_tokens[1] = New(Token,, temp);
+
+	is_in_STR := false;
+	str_depth := 0;
+	is_typedeffing := false;
+	is_typedeffing_struct := false;
+	typedeffing_struct_brace_depth := 0;
+	is_looking_for_type_ident := false;
+	is_modifying_type_ident := false;
+	modifying_type_ident_depth := 0;
 
     while true {
+
         token := get_next_token(*tokenizer);
         if token.type == .eof break;
 
         using tokenizer;
 
         prev_token := cast(*Token) prev_tokens[0];
+		prevprev_token := cast(*Token) prev_tokens[1];
+
+        if token.type == .string_literal && prev_token.type == .directive && prev_token.directive == .di_include {
+		    token_string: string;
+            token_string.data = bytes.data + token.start;
+            token_string.count = token.len;
+            
+            
+
+            if token_string[0] == #char "\"" {
+                token_string.count -= 1;
+                token_string.data += 1;
+            }
+            if token_string.count > 1 && token_string[token_string.count-1] == #char "\"" {
+                token_string.count -= 1;
+            }
+
+
+            include_full_path := tprint("%1/%2", get_parent_dir_path(buffer.file.full_path), token_string);
+            abs_path, ok := replace(get_absolute_path(include_full_path,,temp), "\\", "/");
+
+            index, found := table_find(*buffers_table, abs_path);
+            
+            if (found) {
+
+                max_depth :: 8;
+
+                add_recursive :: (parent: *Buffer, index: s64, depth: *int) {
+                    child := open_buffers[index];
+
+                    << depth += 1;
+                    if << depth < max_depth
+
+                    for child.included_buffer_indices {
+                        if array_find(to_view(parent.included_buffer_indices), it)
+                            continue;
+                        add(*parent.included_buffer_indices, it);
+
+                        add_recursive(parent, it, depth);
+                    }
+                }
+                
+                add(*included_buffer_indices, index);
+                depth := 0;
+                add_recursive(buffer, index, *depth);
+            }
+
+            token_string = trim(token_string);
+		}
+		
+		if (is_looking_for_type_ident && (token.type == .identifier || token.type == .type)) {
+            is_looking_for_type_ident = false;
+
+            token_string: string;
+            token_string.data = bytes.data + token.start;
+            token_string.count = token.len;
+
+            node := *word_tree;
+            for token_string {
+
+                index := az_char_index(it);
+                if index == -1  break;
+
+                if (node.next[index] == 0xffff) {
+                    node.next[index] = xx word_node_buffer.count;
+                    _, w := bucket_array_add(*word_node_buffer, .{});
+                    w.* = .{};
+                    assert(w.next[0] == 0xffff);
+                }
+                node = *buffer.word_node_buffer[node.next[index]];
+            }
+
+            // Null terminate
+            if node.next[0] == 0xffff {
+                node.next[0] = xx word_node_buffer.count;
+                _, w := bucket_array_add(*word_node_buffer, .{});
+                w.* = .{};
+                assert(w.next[0] == 0xffff);
+            }
+
+        } else if is_in_STR memset(tokens.data + token.start, xx Token_Type.string_literal, token.len);
+        else memset(tokens.data + token.start, xx token.type, token.len);
+		if token.type == .identifier && is_defined_word(buffer, string.{token.len, bytes.data + token.start}){
+            memset(tokens.data + token.start, xx Token_Type.type, token.len);
+		}
+
+
 
         // Maybe retroactively highlight a function
         if token.type == .punctuation && token.punctuation == .l_paren {
             // Handle "func("
-            if prev_token.type == .identifier {
+            if !is_in_STR && prev_token.type == .identifier {
                 memset(tokens.data + prev_token.start, xx Token_Type.function, prev_token.len);
+            }
+
+			if is_in_STR  str_depth += 1;
+			if (prev_token.type == .keyword && prev_token.keyword == .kw_STR)
+			{
+				is_in_STR = true;
+			}
+        }
+
+        if (token.type == .keyword && (token.keyword == .kw_struct || token.keyword == .kw_enum)) {
+            is_looking_for_type_ident = true;
+        }
+
+        if (token.type == .keyword && token.keyword == .kw_typedef) {
+            is_typedeffing = true;
+        }
+
+        if (is_typedeffing && (token.type == .identifier || token.type == .type)) {
+            is_typedeffing = false;
+            is_looking_for_type_ident = true;
+        }
+        if (is_typedeffing && token.type == .keyword && token.keyword == .kw_struct) {
+            is_typedeffing_struct = true;
+            is_typedeffing = false;
+        }
+
+        if (is_typedeffing_struct && token.type == .punctuation && token.punctuation == .l_brace) {
+            typedeffing_struct_brace_depth += 1;
+        }
+        if (is_typedeffing_struct && token.type == .punctuation && token.punctuation == .r_brace) {
+            typedeffing_struct_brace_depth -= 1;
+        }
+
+        if (is_typedeffing_struct && typedeffing_struct_brace_depth <= 1 && token.type == .punctuation && token.punctuation == .r_brace) {
+            is_typedeffing_struct = false;
+            is_typedeffing = false;
+            is_looking_for_type_ident = true;
+        }
+        
+        if (is_looking_for_type_ident && token.type == .punctuation && token.punctuation == .l_paren) {
+            is_modifying_type_ident = true;
+            is_looking_for_type_ident = false;
+        } 
+        
+        if (is_modifying_type_ident && token.type == .punctuation && token.punctuation == .l_paren) {
+            modifying_type_ident_depth += 1;
+        }
+        
+        if (is_modifying_type_ident && token.type == .punctuation && token.punctuation == .r_paren) {
+            modifying_type_ident_depth -= 1;
+            if (modifying_type_ident_depth == 0) {
+                is_modifying_type_ident = false;
+                is_looking_for_type_ident = true;
             }
         }
 
-        prev_token.* = token;
+        if token.type == .punctuation && token.punctuation == .r_paren {
+			if is_in_STR {
+				if str_depth == 0 {
+					is_in_STR = false;
+				} else {
+					str_depth -= 1;
+				}
+			}
+			
+			memset(tokens.data + token.start, xx Token_Type.punctuation, token.len);
+		}
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+		prevprev_token.* = prev_token.*;
+        prev_token.* = token;
     }
 
     return .[];
@@ -425,6 +587,7 @@ KEYWORDS :: string.[
     "break", "case", "continue", "default", "do", "else", "enum", "for", "goto", "if", "return", "sizeof", "struct", "switch",
     "typedef", "union", "while","_Atomic", "_Generic", "_Noreturn", "_Static_assert", "__asm", "__asm__", "__except",
     "__finally", "__leave", "__try",
+    "STR"
 ];
 
 TYPE_KEYWORDS :: string.[
@@ -435,7 +598,7 @@ TYPE_KEYWORDS :: string.[
     "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "int_least8_t", "int_least16_t",
     "int_least32_t", "int_least64_t", "uint_least8_t", "uint_least16_t", "uint_least32_t", "uint_least64_t", "int_fast8_t",
     "int_fast16_t", "int_fast32_t", "int_fast64_t", "uint_fast8_t", "uint_fast16_t", "uint_fast32_t", "uint_fast64_t", "intptr_t",
-    "uintptr_t", "intmax_t", "uintmax_t", "wint_t", "size_t", "ptrdiff_t", "sig_atomic_t", "time_t", "clock_t",
+    "uintptr_t", "intmax_t", "uintmax_t", "wint_t", "size_t", "ptrdiff_t", "sig_atomic_t", "time_t", "clock_t", "bool", "u8", "s8", "u16", "s16", "u32", "s32", "u64", "s64", "sys_int", "sys_uint", "uint8", "int8", "uint16", "int16", "uint32", "int32", "uint64", "int64"
 ];
 
 VALUE_KEYWORDS :: string.[
