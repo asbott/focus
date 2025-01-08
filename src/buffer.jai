@@ -562,8 +562,8 @@ retokenize :: (buffer: *Buffer) {
         }
     }
     // Print words for debug
-    buf: [256]u8;
-    print_node(buffer, *buffer.word_tree, buf.data, 0);
+    // buf: [256]u8;
+    // print_node(buffer, *buffer.word_tree, buf.data, 0);
 }
 
 buffer_needs_tokenizing :: (buffer: Buffer) -> bool {
@@ -1759,7 +1759,8 @@ buffer_edit_notifications: Array(Buffer.Edit_Notification);
 Word_Node :: struct {
     // a-z*2 + 0-9 + 1 for null terminator + 1 for _
     // u32 index into word_node_buffer
-    next: [80]u16 = #run -> [80]u16 { n: [80]u16; for * n  it.* = 0xffff; return n; }; 
+    next: [80]u16 = #run -> [80]u16 { n: [80]u16; for * n  it.* = 0xffff; return n; };
+    
 }
 
 az_char_index :: (char: u8) -> int {

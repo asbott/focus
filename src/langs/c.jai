@@ -13,6 +13,8 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
 	is_looking_for_type_ident := false;
 	is_modifying_type_ident := false;
 	modifying_type_ident_depth := 0;
+	
+	is_defining_vk_handle := false;
 
     while true {
 
@@ -74,6 +76,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
 		
 		if (is_looking_for_type_ident && (token.type == .identifier || token.type == .type)) {
             is_looking_for_type_ident = false;
+            is_defining_vk_handle = false;
 
             token_string: string;
             token_string.data = bytes.data + token.start;
@@ -110,18 +113,21 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
 
 
 
-        // Maybe retroactively highlight a function
         if token.type == .punctuation && token.punctuation == .l_paren {
-            // Handle "func("
-            if !is_in_STR && prev_token.type == .identifier {
-                memset(tokens.data + prev_token.start, xx Token_Type.function, prev_token.len);
-            }
 
 			if is_in_STR  str_depth += 1;
-			if (prev_token.type == .keyword && prev_token.keyword == .kw_STR)
+			if (prev_token.type == .keyword && prev_token.keyword == .kw_RSTR)
 			{
 				is_in_STR = true;
 			}
+        }
+        
+        if (token.type == .keyword && (token.keyword == .kw_VK_DEFINE_HANDLE || token.keyword == .kw_VK_DEFINE_NON_DISPATCHABLE_HANDLE)) {
+            is_defining_vk_handle = true;
+        }
+        
+        if (is_defining_vk_handle && token.type == .punctuation && token.punctuation == .l_paren) {
+            is_looking_for_type_ident = true;
         }
 
         if (token.type == .keyword && (token.keyword == .kw_struct || token.keyword == .kw_enum)) {
@@ -154,7 +160,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
             is_looking_for_type_ident = true;
         }
         
-        if (is_looking_for_type_ident && token.type == .punctuation && token.punctuation == .l_paren) {
+        if (is_looking_for_type_ident && !is_defining_vk_handle && token.type == .punctuation && token.punctuation == .l_paren) {
             is_modifying_type_ident = true;
             is_looking_for_type_ident = false;
         } 
@@ -587,7 +593,7 @@ KEYWORDS :: string.[
     "break", "case", "continue", "default", "do", "else", "enum", "for", "goto", "if", "return", "sizeof", "struct", "switch",
     "typedef", "union", "while","_Atomic", "_Generic", "_Noreturn", "_Static_assert", "__asm", "__asm__", "__except",
     "__finally", "__leave", "__try",
-    "STR"
+    "RSTR", "VK_DEFINE_HANDLE", "VK_DEFINE_NON_DISPATCHABLE_HANDLE"
 ];
 
 TYPE_KEYWORDS :: string.[
