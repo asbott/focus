@@ -8,11 +8,16 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
 	is_in_STR := false;
 	str_depth := 0;
 	is_typedeffing := false;
-	is_typedeffing_struct := false;
-	typedeffing_struct_brace_depth := 0;
+	is_typedeffin_type_decl := false;
+	typedeffing_type_decl_brace_depth := 0;
+	type_ident_defn_depth := 0;
 	is_looking_for_type_ident := false;
+	is_looking_for_type_ident_or_defn := false;
 	is_modifying_type_ident := false;
 	modifying_type_ident_depth := 0;
+	type_kind := Keyword.kw_struct;
+	is_defining_enum := false;
+	is_macro_gooning := false;
 	
 	is_defining_vk_handle := false;
 
@@ -74,7 +79,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
             token_string = trim(token_string);
 		}
 		
-		if (is_looking_for_type_ident && (token.type == .identifier || token.type == .type)) {
+		if (is_looking_for_type_ident && (token.type == .identifier || token.type == .type) && type_ident_defn_depth == 0) {
             is_looking_for_type_ident = false;
             is_defining_vk_handle = false;
 
@@ -82,33 +87,21 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
             token_string.data = bytes.data + token.start;
             token_string.count = token.len;
 
-            node := *word_tree;
-            for token_string {
+            
+            define_word(buffer, token_string, .type);
 
-                index := az_char_index(it);
-                if index == -1  break;
-
-                if (node.next[index] == 0xffff) {
-                    node.next[index] = xx word_node_buffer.count;
-                    _, w := bucket_array_add(*word_node_buffer, .{});
-                    w.* = .{};
-                    assert(w.next[0] == 0xffff);
-                }
-                node = *buffer.word_node_buffer[node.next[index]];
-            }
-
-            // Null terminate
-            if node.next[0] == 0xffff {
-                node.next[0] = xx word_node_buffer.count;
-                _, w := bucket_array_add(*word_node_buffer, .{});
-                w.* = .{};
-                assert(w.next[0] == 0xffff);
-            }
 
         } else if is_in_STR memset(tokens.data + token.start, xx Token_Type.string_literal, token.len);
         else memset(tokens.data + token.start, xx token.type, token.len);
-		if token.type == .identifier && is_defined_word(buffer, string.{token.len, bytes.data + token.start}){
-            memset(tokens.data + token.start, xx Token_Type.type, token.len);
+		if token.type == .identifier {
+            defn := get_word_definition(buffer, string.{token.len, bytes.data + token.start});
+            
+            if defn & .enum_constant
+                memset(tokens.data + token.start, xx Token_Type.enum_variant, token.len);
+            if defn & .type
+                memset(tokens.data + token.start, xx Token_Type.type, token.len);
+            if defn & .macro
+                memset(tokens.data + token.start, xx Token_Type.macro, token.len);
 		}
 
 
@@ -130,8 +123,19 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
             is_looking_for_type_ident = true;
         }
 
-        if (token.type == .keyword && (token.keyword == .kw_struct || token.keyword == .kw_enum)) {
+        if (token.type == .keyword && (token.keyword == .kw_struct || token.keyword == .kw_enum || token.keyword == .kw_union)) {
+            is_looking_for_type_ident_or_defn = true;
             is_looking_for_type_ident = true;
+            type_kind = token.keyword;
+        }
+        
+        if is_looking_for_type_ident_or_defn && token.type == .punctuation && token.punctuation == .l_brace {
+            is_looking_for_type_ident_or_defn = false;
+            is_looking_for_type_ident = false;
+            if (type_kind == .kw_enum)  is_defining_enum = true;
+        }
+        if is_looking_for_type_ident_or_defn && (token.type == .identifier) {
+            is_looking_for_type_ident_or_defn = false;
         }
 
         if (token.type == .keyword && token.keyword == .kw_typedef) {
@@ -142,20 +146,22 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
             is_typedeffing = false;
             is_looking_for_type_ident = true;
         }
-        if (is_typedeffing && token.type == .keyword && token.keyword == .kw_struct) {
-            is_typedeffing_struct = true;
+        if (is_typedeffing && token.type == .keyword && (token.keyword == .kw_struct || token.keyword == .kw_enum || token.keyword == .kw_union)) {
+            is_typedeffin_type_decl = true;
             is_typedeffing = false;
+            type_kind = token.keyword;
         }
 
-        if (is_typedeffing_struct && token.type == .punctuation && token.punctuation == .l_brace) {
-            typedeffing_struct_brace_depth += 1;
+        if (is_typedeffin_type_decl && token.type == .punctuation && token.punctuation == .l_brace) {
+            typedeffing_type_decl_brace_depth += 1;
+            if (type_kind == .kw_enum)  is_defining_enum = true;
         }
-        if (is_typedeffing_struct && token.type == .punctuation && token.punctuation == .r_brace) {
-            typedeffing_struct_brace_depth -= 1;
+        if (is_typedeffin_type_decl && token.type == .punctuation && token.punctuation == .r_brace) {
+            typedeffing_type_decl_brace_depth -= 1;
         }
 
-        if (is_typedeffing_struct && typedeffing_struct_brace_depth <= 1 && token.type == .punctuation && token.punctuation == .r_brace) {
-            is_typedeffing_struct = false;
+        if (is_typedeffin_type_decl && typedeffing_type_decl_brace_depth <= 1 && token.type == .punctuation && token.punctuation == .r_brace) {
+            is_typedeffin_type_decl = false;
             is_typedeffing = false;
             is_looking_for_type_ident = true;
         }
@@ -175,6 +181,37 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
                 is_modifying_type_ident = false;
                 is_looking_for_type_ident = true;
             }
+        }
+        
+        if is_defining_enum  && token.type == .punctuation && token.punctuation == .r_brace {
+            is_defining_enum = false;
+        }
+        
+        if is_looking_for_type_ident && token.type == .punctuation && token.punctuation == .l_brace {
+            type_ident_defn_depth += 1;
+            
+            if (type_kind == .kw_enum)  is_defining_enum = true;
+        }
+        if is_looking_for_type_ident && token.type == .punctuation && token.punctuation == .r_brace {
+            type_ident_defn_depth -= 1;
+            is_defining_enum = false;
+            if type_ident_defn_depth < 0  type_ident_defn_depth = 0;
+        }
+        
+        if (is_defining_enum && token.type == .identifier) {
+            token_string: string;
+            token_string.data = bytes.data + token.start;
+            token_string.count = token.len;
+            define_word(buffer, token_string, .enum_constant);
+            memset(tokens.data + token.start, xx Token_Type.enum_variant, token.len);
+        }
+        
+        if prev_token.type == .directive && prev_token.directive == .di_define {
+            token_string: string;
+            token_string.data = bytes.data + token.start;
+            token_string.count = token.len;
+            define_word(buffer, token_string, .macro);
+            memset(tokens.data + token.start, xx Token_Type.macro, token.len);
         }
 
         if token.type == .punctuation && token.punctuation == .r_paren {

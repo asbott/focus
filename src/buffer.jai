@@ -1582,7 +1582,7 @@ get_range_as_string :: (buffer: Buffer, range: Offset_Range) -> string {
 init_buffer :: (using buffer: *Buffer) {
     init(*content_lock);
     buffer.word_tree = .{};
-    assert(buffer.word_tree.next[0] == 0xffff);
+    assert(buffer.word_tree.next[0] == 0xffffffff);
 }
 
 get_unsaved_buffer_ids :: () -> [] s64 /* temp */ {
@@ -1758,9 +1758,15 @@ buffer_edit_notifications: Array(Buffer.Edit_Notification);
 
 Word_Node :: struct {
     // a-z*2 + 0-9 + 1 for null terminator + 1 for _
-    // u32 index into word_node_buffer
-    next: [80]u16 = #run -> [80]u16 { n: [80]u16; for * n  it.* = 0xffff; return n; };
+    // u24 index into word_node_buffer, u8 flags
+    next: [80]u32 = #run -> [80]u32 { n: [80]u32; for * n  it.* = 0xffffffff; return n; };
     
+}
+Word_Flags :: enum_flags u8 {
+    undefined;
+    type;
+    macro;
+    enum_constant;
 }
 
 az_char_index :: (char: u8) -> int {
@@ -1788,9 +1794,39 @@ char_index_az :: (i: int) -> u8 {
     }
 }
 
-is_defined_word :: (using buffer: *Buffer, word: string, buffer_index_stack: *[..]s64 = null) -> bool {
-    if word.count == 0 return false;
-    if !word return false;
+define_word :: (using buffer: *Buffer, w: string, f: Word_Flags) {
+    node := *word_tree;
+    for w {
+
+        char_index := az_char_index(it);
+        if char_index == -1  break;
+
+
+        if (node.next[char_index] == 0xffffffff) {
+            node.next[char_index] = xx (word_node_buffer.count & 0x00ffffff);
+            _, w := bucket_array_add(*word_node_buffer, .{});
+            w.* = .{};
+            assert(w.next[0] == 0xffffffff);
+        }
+        
+        index_in_buffer := node.next[char_index] & 0x00ffffff;
+        node = *buffer.word_node_buffer[index_in_buffer];
+    }
+
+    // Null terminate
+    if node.next[0] == 0xffffffff {
+        node.next[0] = xx (word_node_buffer.count);
+        _, w := bucket_array_add(*word_node_buffer, .{});
+        w.* = .{};
+        assert(w.next[0] == 0xffffffff);
+    }
+    
+    // Add flags on null terminator
+    node.next[0] |= (((cast(u32)f) << 24) & 0xff000000);
+}
+get_word_definition :: (using buffer: *Buffer, word: string, buffer_index_stack: *[..]s64 = null) -> Word_Flags {
+    if word.count == 0 return .undefined;
+    if !word return .undefined;
 
     if (!buffer_index_stack)
         buffer_index_stack = New([..]s64,,temp);
@@ -1801,17 +1837,18 @@ is_defined_word :: (using buffer: *Buffer, word: string, buffer_index_stack: *[.
     full_match := true;
     for word {
         index := az_char_index(it);
-        if index == -1  return false;
-        if node.next[index] == 0xffff {
+        if index == -1  return .undefined;
+        if node.next[index] == 0xffffffff {
             full_match = false;
             break;
         }
-        node = *buffer.word_node_buffer[node.next[index]];
+        index_in_buffer := node.next[index] & 0x00ffffff;
+        node = *buffer.word_node_buffer[index_in_buffer];
     }
 
     // If end right before null termination, this is a valid defined word.
-    if full_match && node.next[0] != 0xffff {
-        return true;
+    if full_match && node.next[0] != 0xffffffff {
+        return cast(Word_Flags)((node.next[0] >> 24));
     }
 
     // If not found in buffer, see if in any included (and open) buffer
@@ -1819,13 +1856,15 @@ is_defined_word :: (using buffer: *Buffer, word: string, buffer_index_stack: *[.
         if array_find(buffer_index_stack.*, it)
             continue;
         array_add(buffer_index_stack, it,, temp);
-        if is_defined_word(*open_buffers[it], word, buffer_index_stack)
-            return true;
+        
+        other_defn := get_word_definition(*open_buffers[it], word, buffer_index_stack);
+        if other_defn != .undefined
+            return other_defn;
     }
 
 
 
-    return false;
+    return .undefined;
 }
 #import "Bucket_Array";
 Buffer :: struct {
