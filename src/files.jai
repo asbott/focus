@@ -104,7 +104,7 @@ get_lowercase_extension :: (path: string, greedy := true) -> string /* temp */, 
     extension := advance(basename_with_extension, index + 1);
     if !extension return "", false;
 
-    return to_lower_copy_new(extension,, allocator = temp), true;
+    return to_lower_copy(extension,, allocator = temp), true;
 }
 
 is_file_binary :: (file_data: string) -> bool {
@@ -115,7 +115,7 @@ is_file_binary :: (file_data: string) -> bool {
     return has_zeroes;
 }
 
-should_ignore_file :: (path: string) -> bool {
+should_ignore_file :: (path: string, check_for_zeroes_if_needed := true) -> bool {
     should_ignore, explicitly_allowed := should_ignore_path(path);
     if should_ignore return true;
     if explicitly_allowed return false;
@@ -151,6 +151,8 @@ should_ignore_file :: (path: string) -> bool {
         if POSIX.stat(temp_c_string(path), *stats) < 0 return true;
         if !POSIX.S_ISREG(stats.st_mode) return true;
     }
+
+    if !check_for_zeroes_if_needed return false;
 
     // Ignore binary files - it's not a 100% guarantee but a good heuristic.
     // We're not using read_entire_file here because this function is used when scanning workspace
@@ -336,7 +338,7 @@ path_wildcard_match :: (path: string, pattern: string) -> bool {
 
     #if OS == .WINDOWS {
         // TODO: support case-insensitive Unicode paths
-        return _wildcard_match(to_lower_copy_new(path,, temp), to_lower_copy_new(pattern,, temp));
+        return _wildcard_match(to_lower_copy(path,, temp), to_lower_copy(pattern,, temp));
     }
     return _wildcard_match(path, pattern);
 }

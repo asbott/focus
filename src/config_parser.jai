@@ -61,10 +61,13 @@ parse_config :: (name: string, file_path: string, file_data: string, for_highlig
         return result;
     }
 
+    result.error_msg = "";
     result.config.version = ifx handler.version > 0 then handler.version else CURRENT_CONFIG_VERSION;
+
     if result.config.version != CURRENT_CONFIG_VERSION {
-        result.error_msg = tprint("Invalid version [%] in file '%'. The only supported version is [%].", result.config.version, file_path, CURRENT_CONFIG_VERSION);
-        return result;
+        // We will still attempt to parse the config, but it's expected that it can fail when there's a version mismatch
+        error_msg := tprint("Invalid version [%] in file '%'. The only supported version is [%].", result.config.version, file_path, CURRENT_CONFIG_VERSION);
+        array_add(*result.warnings, error_msg);
     }
 
     if as_theme then active_section = .style;
@@ -148,7 +151,6 @@ parse_config :: (name: string, file_path: string, file_data: string, for_highlig
     }
 
     result.success   = true;
-    result.error_msg = "";
 
     return result;
 }
@@ -170,7 +172,7 @@ keymap_map_key_code_to_string :: (key_code: u32) -> string /* temp */ {
 }
 
 get_theme_file_from_name :: (name: string) -> string /* temp */ {
-    theme_name := to_lower_copy_new(name,, temp);
+    theme_name := to_lower_copy(name,, temp);
     return tprint("%/%.focus-theme", themes_dir, theme_name);
 }
 
@@ -215,6 +217,8 @@ map_name_to_color :: (name: string) -> Color {
         case "shadow_transparent";                      return .SHADOW_TRANSPARENT;
         case "text_input_label";                        return .TEXT_INPUT_LABEL;
         case "char_under_cursor";                       return .CHAR_UNDER_CURSOR;
+        case "active_pane_border";                      return .ACTIVE_PANE_BORDER;
+        case "inactive_pane_dim_overlay";               return .INACTIVE_PANE_DIM_OVERLAY;
 
         case "ui_default";                              return .UI_DEFAULT;
         case "ui_dim";                                  return .UI_DIM;
@@ -1077,6 +1081,14 @@ parse_settings_line :: (using parser: *Config_Parser, line: string) -> success: 
                     );
                     append(*b, code);
 
+                case .FLOAT;
+                    code := construct_parse_code(
+                        setting.name,
+                        "val, success := parse_float(*value);",
+                        "tprint(\"Couldn't parse '%1' - expected a valid float, got '%%'\", setting_value)",
+                    );
+                    append(*b, code);
+
                 case .ENUM;
                     code := construct_parse_code(
                         setting.name,
@@ -1236,7 +1248,7 @@ parse_key_combo :: (using parser: *Config_Parser, combo_str: string, line: strin
 
         valid_mod_key := true;
 
-        if to_lower_copy_new(mod_key,, temp) == {
+        if to_lower_copy(mod_key,, temp) == {
             case "ctrl";    combo.mods.ctrl_pressed       = true;
             case "shift";   combo.mods.shift_pressed      = true;
             case "alt";     combo.mods.alt_pressed        = true;

@@ -6,11 +6,11 @@ theme_dialog: Theme_Dialog;
 
 Theme_Dialog :: struct {
     using #as generic_dialog: Generic_Choice_Dialog(Theme);
-    generic_dialog.global_widget_id    = .theme_dialog;
-    generic_dialog.refresh_entries     = theme_dialog_refresh_entries;
-    generic_dialog.after_refresh       = preview_selected_theme;
-    generic_dialog.open_entry_in_place = apply_selected_theme;
-    generic_dialog.on_move             = preview_selected_theme;
+    generic_dialog.global_widget_id = .theme_dialog;
+    generic_dialog.refresh_entries  = theme_dialog_refresh_entries;
+    generic_dialog.after_refresh    = preview_selected_theme;
+    generic_dialog.open_entry       = apply_selected_theme;
+    generic_dialog.on_move          = preview_selected_theme;
 };
 
 edit_current_theme :: (placement: Editor_Placement) {
@@ -25,6 +25,22 @@ edit_current_theme :: (placement: Editor_Placement) {
     }
     theme_path := tprint("%/%.focus-theme", themes_dir, config.style.theme);
     editors_open_file(theme_path, placement);
+}
+
+edit_current_theme :: (pane: *Editor_Pane) {
+    if !pane return;
+
+    if !config.style.theme {
+        add_user_warning("No theme is currently active");
+        return;
+    }
+    if config.style.theme == "default" {
+        add_user_warning("Default theme is active. It's immutable.\nIf you want to edit it, copy [colors] from the default config and adjust them.");
+        editors_show_default_config(pane);
+        return;
+    }
+    theme_path := tprint("%/%.focus-theme", themes_dir, config.style.theme);
+    editors_open_file_in_pane(theme_path, pane);
 }
 
 maybe_revert_temporary_theme :: () {
@@ -44,7 +60,7 @@ set_temporary_theme :: (theme_name: string) {
     temporary_theme = copy_string(theme_name,, allocator = focus_allocator);
 }
 
-apply_selected_theme :: () {
+apply_selected_theme :: (_: Editor_Placement) {
     using theme_dialog;
     if selected >= filtered.count return;
 

@@ -6,12 +6,26 @@ open_file_dialog_handle_event :: (event: Input.Event) -> handled: bool {
         if action == {
             case .escape;                   #through;
             case .close_dialog;             close_open_file_dialog(.CANCEL);                                               return true;
-            case .close_current_editor;     maybe_close_file_under_cursor();                                               return true;
+            case .close_editor;             maybe_close_file_under_cursor();                                               return true;
 
-            case .open_entry_in_place;      open_file_dialog_open_entry(entries.selected, .in_place);                      return true;
-            case .open_entry_on_the_side;   if mode != .save  open_file_dialog_open_entry(entries.selected, .on_the_side); return true;
-            case .open_entry_on_the_left;   if mode != .save  open_file_dialog_open_entry(entries.selected, .left);        return true;
-            case .open_entry_on_the_right;  if mode != .save  open_file_dialog_open_entry(entries.selected, .right);       return true;
+            case .open_entry;               open_file_dialog_open_entry(entries.selected, .in_place);                      return true;
+            case .open_entry_in_side_pane;  if mode != .save  open_file_dialog_open_entry(entries.selected, .on_the_side); return true;
+
+            case .switch_to_left_pane;      if mode != .save  open_file_dialog_open_entry(entries.selected, .left);        return true;
+            case .switch_to_right_pane;     if mode != .save  open_file_dialog_open_entry(entries.selected, .right);       return true;
+            case .switch_to_top_pane;       if mode != .save  open_file_dialog_open_entry(entries.selected, .top);         return true;
+            case .switch_to_bottom_pane;    if mode != .save  open_file_dialog_open_entry(entries.selected, .bottom);      return true;
+
+            case .switch_to_pane_1;         open_file_dialog_open_entry_in_pane(entries.selected, 1);                      return true;
+            case .switch_to_pane_2;         open_file_dialog_open_entry_in_pane(entries.selected, 2);                      return true;
+            case .switch_to_pane_3;         open_file_dialog_open_entry_in_pane(entries.selected, 3);                      return true;
+            case .switch_to_pane_4;         open_file_dialog_open_entry_in_pane(entries.selected, 4);                      return true;
+            case .switch_to_pane_5;         open_file_dialog_open_entry_in_pane(entries.selected, 5);                      return true;
+            case .switch_to_pane_6;         open_file_dialog_open_entry_in_pane(entries.selected, 6);                      return true;
+            case .switch_to_pane_7;         open_file_dialog_open_entry_in_pane(entries.selected, 7);                      return true;
+            case .switch_to_pane_8;         open_file_dialog_open_entry_in_pane(entries.selected, 8);                      return true;
+            case .switch_to_pane_9;         open_file_dialog_open_entry_in_pane(entries.selected, 9);                      return true;
+
             case .open_entry_in_explorer;   open_file_dialog_open_entry_in_explorer(entries.selected);                     return true;
 
             case .open_directory;           handled := open_file_dialog_open_entry(entries.selected, .in_place, folder_only = true, slash_key_pressed = (event.key_code == #char "/"));
@@ -71,7 +85,7 @@ open_file_dialog_maybe_refresh_entries :: inline () {
 show_open_file_dialog :: (mode: Open_File_Dialog.Mode, buffer_id_to_save: s64 = -1, triggered_by: Deferred_Action_Id = -1, from_root := false) {
     if !from_root {
         // Derive the path chunks from the current open file
-        editor, buffer := get_active_editor_and_buffer();
+        editor, buffer := get_visible_editor_and_buffer();
         if active_global_widget == .editors && buffer && buffer.has_file then set_path_chunks_from_file(buffer.file.full_path);
     } else {
         clear_path_chunks();
@@ -87,15 +101,11 @@ show_open_file_dialog :: (mode: Open_File_Dialog.Mode, buffer_id_to_save: s64 = 
     open_file_dialog.mode = mode;
     open_file_dialog.buffer_id_to_save = buffer_id_to_save;
 
-    if mode == .open_editors && most_recent_buffers.count >= 2 && editors.active >= 0 {
-        active_buffer_id := open_editors[editors.active].buffer_id;
-        if active_buffer_id == most_recent_buffers[0] {
-            // Swap the first 2 buffers so that we don't show the current buffer first
-            Swap(*most_recent_buffers[0], *most_recent_buffers[1]);
-        }
-    }
-
     refresh_entries();
+
+    if open_file_dialog.mode == .open_editors && open_file_dialog.entries.filtered.count >= 2 {
+        open_file_dialog.entries.selected = 1;
+    }
 }
 
 close_open_file_dialog :: (result: Open_File_Dialog.Result, selected_path := "") {
@@ -147,11 +157,14 @@ open_file_dialog_open_entry :: (selected: s64, placement: Editor_Placement, fold
         case .file;
             if folder_only return true;
             if mode != .save && mode != .move {
-                if entry.buffer_id >= 0 {
-                    editors_open_buffer(entry.buffer_id, placement);
+                if mode == .open_editors && placement == .in_place && entry.buffer_id >= 0 {
+                    editors_show_existing_buffer(entry.buffer_id);
                 } else {
-                    path := entry.full_path;
-                    editors_open_file(path, placement);
+                    if entry.buffer_id >= 0 {
+                        editors_open_buffer(entry.buffer_id, placement);
+                    } else {
+                        editors_open_file(entry.full_path, placement);
+                    }
                 }
             }
             close_open_file_dialog(.SELECTED_PATH, entry.full_path);
@@ -175,6 +188,30 @@ open_file_dialog_open_entry :: (selected: s64, placement: Editor_Placement, fold
     }
 
     return true;
+}
+
+open_file_dialog_open_entry_in_pane :: (selected: s64, number: s64) {
+    using open_file_dialog;
+    if mode == .save || mode == .move return;
+
+    target_pane := editors_find_pane_by_number(number);
+    if !target_pane {
+        add_user_error("Pane number % doesn't exist", number, dismiss_in_seconds = 3);
+        return;
+    }
+
+    if selected >= entries.filtered.count  return;
+    entry := entries.filtered[selected];
+
+    if entry.type == .file {
+        if entry.buffer_id >= 0 {
+            editors_open_buffer_in_pane(entry.buffer_id, target_pane);
+        } else {
+            editors_open_file_in_pane(entry.full_path, target_pane);
+        }
+        activate_pane(target_pane);
+        close_open_file_dialog(.SELECTED_PATH, entry.full_path);
+    }
 }
 
 open_file_dialog_open_entry_in_explorer :: (selected: s64) {
@@ -237,7 +274,7 @@ maybe_close_file_under_cursor :: () {
 
     for editor, editor_id : open_editors {
         if editor.buffer_id != buffer_id continue;
-        close_editor_by_id(editor_id, skip_animation = true);
+        close_editor_by_id(editor_id);
     }
 
     refresh_entries(clear_input = false);
@@ -603,7 +640,7 @@ Open_File_Dialog :: struct {
         selected_by_mouse: s64 = -1;  // to remember which entry the left mouse button went down on
 
         scroll_y: s32;
-        scroll_anim := #run Tween_Animation(s32).{ speed = 0.1, func = .lerp };
+        scroll_anim := #run Tween_Animation(s32).{ duration = 0.1, func = .lerp };
         per_page: s64 = 10;
     }
 

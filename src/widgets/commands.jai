@@ -22,9 +22,35 @@ commands_execute_selected :: (placement: Editor_Placement = .in_place) {
         handled := handle_common_editor_action(action, placement);
         if !handled {
             editor, buffer := get_active_editor_and_buffer();
-            if editor then active_editor_handle_event(editor, buffer, Input.Event.{}, action);
+            active_editor_handle_event(editor, buffer, Input.Event.{}, action);
         }
     }
+}
+
+// Some commands open a new editor, for those we want to be able to select a specific pane
+commands_open_in_pane :: (number: s64) {
+    using commands_dialog;
+    if selected >= filtered.count return;
+
+    command := filtered[selected].details;
+    if command.is_build_command return;
+
+    pane := editors_find_pane_by_number(number);
+    if !pane return;
+
+    handled := true;
+    action := cast(Action_Editors) command.action;
+    if action == {
+        case .edit_current_theme;                               edit_current_theme(pane);
+        case .open_global_config;                               editors_open_global_config(pane);
+        case .open_project_config;                              editors_open_project_config(pane);
+        case .show_default_config;                              editors_show_default_config(pane);
+        case .show_troubleshooting_info;                        editors_show_troubleshooting_info(pane);
+        case .create_new_file;                                  editors_create_new_file(pane);
+        case;                                                   handled = false;
+    }
+
+    hide_dialog(*commands_dialog);
 }
 
 commands_refresh_after_config_change :: () {
@@ -41,7 +67,7 @@ commands_refresh_after_config_change :: () {
     for config.build.commands {
         array_add(*commands, Command.{
             action = cast(u16) (it_index + 1),
-            name = sprint("Build: %", it.name),
+            name = sprint("Build Command: %", it.name),
             is_build_command = true,
         });
     }
@@ -55,10 +81,8 @@ Commands_Dialog :: struct {
     using #as generic_dialog: Generic_Choice_Dialog(Command);
     generic_dialog.global_widget_id = .commands_dialog;
     generic_dialog.refresh_entries  = commands_refresh_entries;
-    generic_dialog.open_entry_in_place     = #bake_arguments commands_execute_selected(placement = .in_place);
-    generic_dialog.open_entry_on_the_side  = #bake_arguments commands_execute_selected(placement = .on_the_side);
-    generic_dialog.open_entry_on_the_left  = #bake_arguments commands_execute_selected(placement = .left);
-    generic_dialog.open_entry_on_the_right = #bake_arguments commands_execute_selected(placement = .right);
+    generic_dialog.open_entry         = commands_execute_selected;
+    generic_dialog.open_entry_in_pane = commands_open_in_pane;
 };
 
 #scope_file
@@ -66,9 +90,11 @@ Commands_Dialog :: struct {
 commands_refresh_entries :: (filter: Fuzzy_Filter) {
     using commands_dialog;
 
+    editor_layout := editors_get_layout();
+
     for command : commands {
-        if command.requires_layout == .Single && editors.layout == .None   continue;
-        if command.requires_layout == .Double && editors.layout != .Double continue;
+        if command.requires_layout == .Single && editor_layout == .None   continue;
+        if command.requires_layout == .Multi && editor_layout != .Multi continue;
         if !project_config.loaded && (command.action == xx Action_Editors.open_project_config || command.action == xx Action_Editors.close_project) continue;
 
         score, highlights := fuzzy_match(command.name, filter);
@@ -111,7 +137,7 @@ base_commands := #run -> [] Command {
         cmd( "Edit Current Theme",                .edit_current_theme,               .None   ),
 
         cmd( "Create New File",                   .create_new_file,                  .None   ),
-        cmd( "Create New File On The Side",       .create_new_file_on_the_side,      .Single ),
+        cmd( "Create New File In Side Pane",      .create_new_file_in_side_pane,     .Single ),
 
         cmd( "Search In Workspace",               .search_in_project,                .None   ),
 
@@ -122,16 +148,22 @@ base_commands := #run -> [] Command {
 
         cmd( "Go To Line",                        .go_to_line,                       .Single ),
 
-        cmd( "Close All Files",                   .close_all_editors,                .Single ),
-        cmd( "Close Other Files",                 .close_other_editors,              .Single ),
-        cmd( "Close File",                        .close_current_editor,             .Single ),
-        cmd( "Close Other File",                  .close_other_editor,               .Double ),
-        cmd( "Close Left File",                   .close_left_editor,                .Double ),
-        cmd( "Close Right File",                  .close_right_editor,               .Double ),
+        cmd( "Close Editor",                      .close_editor,                     .Single ),
+        cmd( "Close Other Editors In Pane",       .close_other_editors_in_pane,      .Single ),
+        cmd( "Close All Editors",                 .close_all_editors,                .Single ),
+
+        cmd( "Close Pane",                        .close_pane,                       .Single ),
+        cmd( "Close Other Panes",                 .close_other_panes,                .Single ),
+        cmd( "Close Left Pane",                   .close_left_pane,                  .Single ),
+        cmd( "Close Right Pane",                  .close_right_pane,                 .Single ),
+        cmd( "Close Top Pane",                    .close_top_pane,                   .Single ),
+        cmd( "Close Bottom Pane",                 .close_bottom_pane,                .Single ),
 
         cmd( "Save",                              .save,                             .Single ),
         cmd( "Save As",                           .save_as,                          .Single ),
         cmd( "Save All",                          .save_all,                         .Single ),
+
+        cmd( "Open File Directory",               .open_file_directory,              .Single ),
 
         cmd( "Move Current File",                 .move_current_file,                .Single ),
         cmd( "Delete Current File",               .delete_current_file,              .Single ),
@@ -151,32 +183,61 @@ base_commands := #run -> [] Command {
         cmd( "Move Up To Empty Line",             .move_up_to_empty_line,            .Single ),
         cmd( "Move Down To Empty Line",           .move_down_to_empty_line,          .Single ),
 
-        cmd( "Center View On Cursor",             .center_viewport_on_cursor,        .Single ),
-        cmd( "Move Cursor To Screen Center",      .move_cursor_to_viewport_center,   .Single ),
+        cmd( "Center Viewport On Cursor",         .center_viewport_on_cursor,        .Single ),
+        cmd( "Move Cursor To Viewport Center",    .move_cursor_to_viewport_center,   .Single ),
         cmd( "Remove Additional Cursors",         .remove_additional_cursors,        .Single ),
 
         cmd( "Add Cursors To Line Ends",          .add_cursors_to_line_ends,         .Single ),
         cmd( "Add Cursors To Line Starts",        .add_cursors_to_line_starts,       .Single ),
         cmd( "Align Cursors",                     .align_cursors,                    .Single ),
 
-        cmd( "Cursor: Go Back",                   .move_to_previous_editor_history,  .None   ),
-        cmd( "Cursor: Go Forward",                .move_to_next_editor_history,      .None   ),
+        cmd( "Cursor: Go Back",                   .cursor_go_back,                   .None   ),
+        cmd( "Cursor: Go Forward",                .cursor_go_forward,                .None   ),
+
+        cmd( "Go To Previous Buffer",             .go_to_previous_buffer,            .Single ),
+        cmd( "Go To Next Buffer",                 .go_to_next_buffer,                .Single ),
 
         cmd( "New Line Below Without Breaking",   .new_line_below_without_breaking,  .Single ),
         cmd( "New Line Above Without Breaking",   .new_line_above_without_breaking,  .Single ),
 
         cmd( "Strip Trailing Whitespace",         .strip_trailing_whitespace,        .Single ),
 
-        cmd( "Switch To Left Pane",               .switch_to_left_editor,            .Double ),
-        cmd( "Switch To Right Pane",              .switch_to_right_editor,           .Double ),
-        cmd( "Switch To Other Pane",              .switch_to_other_editor,           .Double ),
+        cmd( "Switch To Left Pane",               .switch_to_left_pane,              .Multi  ),
+        cmd( "Switch To Right Pane",              .switch_to_right_pane,             .Multi  ),
+        cmd( "Switch To Top Pane",                .switch_to_top_pane,               .Multi  ),
+        cmd( "Switch To Bottom Pane",             .switch_to_bottom_pane,            .Multi  ),
+        cmd( "Switch To Side Pane",               .switch_to_side_pane,              .Multi  ),
 
-        cmd( "Duplicate File On The Side",        .duplicate_editor,                 .Single ),
-        cmd( "Duplicate File To The Left",        .duplicate_editor_to_the_left,     .Single ),
-        cmd( "Duplicate File To The Right",       .duplicate_editor_to_the_right,    .Single ),
+        cmd( "Switch To Pane 1",                  .switch_to_pane_1,                 .Multi  ),
+        cmd( "Switch To Pane 2",                  .switch_to_pane_2,                 .Multi  ),
+        cmd( "Switch To Pane 3",                  .switch_to_pane_3,                 .Multi  ),
+        cmd( "Switch To Pane 4",                  .switch_to_pane_4,                 .Multi  ),
+        cmd( "Switch To Pane 5",                  .switch_to_pane_5,                 .Multi  ),
+        cmd( "Switch To Pane 6",                  .switch_to_pane_6,                 .Multi  ),
+        cmd( "Switch To Pane 7",                  .switch_to_pane_7,                 .Multi  ),
+        cmd( "Switch To Pane 8",                  .switch_to_pane_8,                 .Multi  ),
+        cmd( "Switch To Pane 9",                  .switch_to_pane_9,                 .Multi  ),
 
-        cmd( "Move Pane To The Left",             .move_editor_to_the_left,          .Double ),
-        cmd( "Move Pane To The Right",            .move_editor_to_the_right,         .Double ),
+        cmd( "Split Left",                        .split_left,                       .Single ),
+        cmd( "Split Right",                       .split_right,                      .Single ),
+        cmd( "Split Top",                         .split_top,                        .Single ),
+        cmd( "Split Bottom",                      .split_bottom,                     .Single ),
+
+        cmd( "Duplicate Editor",                  .duplicate_editor,                 .Single ),
+        cmd( "Duplicate Editor Left",             .duplicate_editor_left,            .Single ),
+        cmd( "Duplicate Editor Right",            .duplicate_editor_right,           .Single ),
+        cmd( "Duplicate Editor Top",              .duplicate_editor_top,             .Single ),
+        cmd( "Duplicate Editor Bottom",           .duplicate_editor_bottom,          .Single ),
+
+        cmd( "Reopen Closed Editor",              .reopen_closed_editor,             .None   ),
+
+        cmd( "Move Editor Left",                  .move_editor_left,                 .Single ),
+        cmd( "Move Editor Right",                 .move_editor_right,                .Single ),
+        cmd( "Move Editor Top" ,                  .move_editor_top,                  .Single ),
+        cmd( "Move Editor Bottom",                .move_editor_bottom,               .Single ),
+
+        cmd( "Rotate Panes Clockwise",            .rotate_panes_clockwise,           .Multi  ),
+        cmd( "Rotate Panes Counterclockwise",     .rotate_panes_counterclockwise,    .Multi  ),
 
         cmd( "Toggle Block Comment",              .toggle_block_comment,             .Single ),
         cmd( "Toggle Line Wrap",                  .toggle_line_wrap,                 .Single ),

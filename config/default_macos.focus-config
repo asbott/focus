@@ -47,7 +47,6 @@ can_cancel_go_to_line:                              true
 copy_whole_line_without_selection:                  false
 line_height_scale_percent:                          120
 max_editor_width:                                   -1
-editor_history_size:                                1024
 line_wrap_is_on_by_default:                         false
 show_line_numbers:                                  false
 show_ruler_at_column:                               0
@@ -58,7 +57,7 @@ draw_indent_guides:                                 false
 auto_surround_with_brackets_and_quotes:             false
 auto_close_brackets:                                false
 persist_local_search_results:                       false  # if true, search results will stay highlighted and you have to dismiss them using the `escape` action
-load_most_recent_project_on_start:                  false
+load_most_recent_project_on_start:                  true
 projects_sorting_order:                             most_recent_first
 
 build_panel_stays_in_one_place:                     false  # if true, the build panel will flip to the inactive pane in two pane layouts
@@ -78,6 +77,16 @@ status_bar_show_cursors_off_screen:                 true
 status_bar_show_line_col:                           true
 status_bar_show_indentation:                        true
 status_bar_show_selected_text_length:               false
+
+show_scrollbar_marks:                               true
+scrollbar_width_scale:                              1.0
+scrollbar_min_opacity:                              0.0   # if you want the scrollbar to be always visible, set this to 1.0
+scrollbar_max_opacity:                              1.0
+scrollbar_fade_in_sensitivity:                      10.0  # controls when the scrollbar appears as the mouse pointer gets close
+scrollbar_fade_out_delay_seconds:                   1.0   # how long the scrollbar stays visible after scrolling
+
+active_pane_border_width:                           1.0   # set the width to 0.0 to disable
+inactive_pane_dim_overlay_opacity:                  0.1   # controls how dim the inactive panes should be
 
 # NOTE: some settings can be specified for a subset of files, based on their language or a wildcard,
 # for example:
@@ -118,8 +127,9 @@ draw_indent_guides:                                 false
 # key_binding:            F9
 
 
-# For jai:    ^(?P<file>.*):(?P<line>\d+),(?P<col>\d+): (?P<type>Error|Warning|Info|...):* (?P<msg>.*)|^(?P<msg1>.*error LNK.*)
-# For golang: ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<msg>.*)$
+# For Jai:    ^(?P<file>.*):(?P<line>\d+),(?P<col>\d+): (?P<type>Error|Warning|Info|...):* (?P<msg>.*)|^(?P<msg1>.*error LNK.*)
+# For Golang: ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<msg>.*)$
+# For Odin:   ^(?P<file>.*)\((?P<line>\d+):(?P<col>\d+)\) (?P<type>Error|Syntax Error): (?P<msg>.*)$
 # ... let us know what regex works for you and we'll add it here
 
 # NOTE:
@@ -142,6 +152,8 @@ draw_indent_guides:                                 false
 # Key combination                 Action
 
 Cmd-D                           select_word_or_create_another_cursor
+Cmd-R                           revert_select_word_or_create_another_cursor
+Cmd-Y                           move_selection_to_next_word
 Cmd-Shift-A                     select_all_occurrences
 
 Cmd-Shift-D                     duplicate_lines
@@ -167,11 +179,11 @@ Cmd-[                           unindent
 Cmd-S                           save
 Cmd-Shift-S                     save_as
 
-Cmd-Opt-Minus                   move_to_previous_editor_history
-Cmd-Opt-Plus                    move_to_next_editor_history
+Cmd-Opt-Minus                   cursor_go_back
+Cmd-Opt-Plus                    cursor_go_forward
 
-Cmd-Shift-Minus                 move_to_previous_buffer
-Cmd-Shift-Plus                  move_to_next_buffer
+Cmd-Shift-Minus                 go_to_previous_buffer
+Cmd-Shift-Plus                  go_to_next_buffer
 
 Cmd-/                           toggle_comment
 Cmd-L                           select_line
@@ -197,16 +209,27 @@ NumpadEnter                     break_line
 Cmd-NumpadEnter                 new_line_below_without_breaking
 Cmd-Shift-NumpadEnter           new_line_above_without_breaking
 
-Cmd-1                           switch_to_left_editor
-Cmd-2                           switch_to_right_editor
-Cmd-,                           switch_to_other_editor
+Cmd-Opt-S ArrowLeft             move_editor_left
+Cmd-Opt-S ArrowRight            move_editor_right
+Cmd-Opt-S ArrowUp               move_editor_top
+Cmd-Opt-S ArrowDown             move_editor_bottom
+
+Cmd-Opt-X ArrowLeft             split_left
+Cmd-Opt-X ArrowRight            split_right
+Cmd-Opt-X ArrowUp               split_top
+Cmd-Opt-X ArrowDown             split_bottom
+
+Cmd-Opt-D ArrowLeft             duplicate_editor_left
+Cmd-Opt-D ArrowRight            duplicate_editor_right
+Cmd-Opt-D ArrowUp               duplicate_editor_top
+Cmd-Opt-D ArrowDown             duplicate_editor_bottom
+
 Cmd-Shift-,                     duplicate_editor
 
-Ctrl-Cmd-Shift-ArrowLeft        move_editor_to_the_left
-Ctrl-Cmd-Shift-ArrowRight       move_editor_to_the_right
+Cmd-Shift-T                     reopen_closed_editor
 
 Cmd-N                           create_new_file
-Cmd-Shift-N                     create_new_file_on_the_side
+Cmd-Shift-N                     create_new_file_in_side_pane
 
 Opt-Shift-ArrowUp               create_cursor_above
 Opt-Shift-ArrowDown             create_cursor_below
@@ -221,32 +244,17 @@ Opt-Cmd-Shift-N                 open_another_editor_instance
 
 [open file dialog]
 
-Enter                           open_entry_in_place
-Cmd-1                           open_entry_on_the_left
-Cmd-Enter                       open_entry_on_the_side
-Cmd-2                           open_entry_on_the_right
 Shift-Enter                     open_entry_in_explorer
-
 Tab                             open_directory
-
 Backspace                       pop_directory
 
 
 [search dialog]
-
-Enter                           open_entry_in_place
-Cmd-Enter                       open_entry_on_the_side
-Cmd-1                           open_entry_on_the_left
-Cmd-2                           open_entry_on_the_right
-
 Shift-Enter                     move_up  # an alternative way to move
 
 Cmd-Opt-C                       toggle_case_sensitive
 Cmd-Opt-W                       toggle_whole_word
 Cmd-Opt-R                       toggle_regex_search
-
-Tab                             go_to_next_input
-Shift-Tab                       go_to_previous_input
 
 [common]
 
@@ -282,14 +290,42 @@ Cmd-K                           cut_to_end_of_line
 Cmd-Delete                      delete_to_end_of_line
 Cmd-Backspace                   delete_to_start_of_line
 
-Cmd-W                           close_current_editor
-Cmd-Shift-W                     close_other_editor
+Cmd-W                           close_editor
+
+Cmd-Shift-W                     close_pane
+Cmd-Opt-W ArrowLeft             close_left_pane
+Cmd-Opt-W ArrowRight            close_right_pane
+Cmd-Opt-W ArrowUp               close_top_pane
+Cmd-Opt-W ArrowDown             close_bottom_pane
+Cmd-Shift-Opt-W                 close_other_panes
 
 Escape                          escape  # combines close_dialog and remove_additional_cursors
 
 Cmd-Shift-L                     toggle_expand
 
 Cmd-B                           build_panel_toggle
+
+Enter                           open_entry
+Cmd-Enter                       open_entry_in_side_pane
+
+Ctrl-Cmd-Shift-ArrowLeft        switch_to_left_pane
+Ctrl-Cmd-Shift-ArrowRight       switch_to_right_pane
+Ctrl-Cmd-Shift-ArrowUp          switch_to_top_pane
+Ctrl-Cmd-Shift-ArrowDown        switch_to_bottom_pane
+Cmd-,                           switch_to_side_pane
+
+Cmd-1                           switch_to_pane_1
+Cmd-2                           switch_to_pane_2
+Cmd-3                           switch_to_pane_3
+Cmd-4                           switch_to_pane_4
+Cmd-5                           switch_to_pane_5
+Cmd-6                           switch_to_pane_6
+Cmd-7                           switch_to_pane_7
+Cmd-8                           switch_to_pane_8
+Cmd-9                           switch_to_pane_9
+
+Tab                             focus_next_ui_element
+Shift-Tab                       focus_previous_ui_element
 
 # Ctrl-Cmd-F will always toggle fullscreen on macOS (like most other apps), but you can uncomment this to use something else.
 # F11                             toggle_fullscreen
@@ -340,9 +376,9 @@ Cmd-0                           reset_font_size_to_default
 Cmd-MouseMiddle                 reset_font_size_to_default
 
 F8                              go_to_next_build_error
-Cmd-F8                          go_to_next_build_error_on_the_side
+Cmd-F8                          go_to_next_build_error_in_side_pane
 Shift-F8                        go_to_previous_build_error
-Shift-Cmd-F8                    go_to_previous_build_error_on_the_side
+Shift-Cmd-F8                    go_to_previous_build_error_in_side_pane
 
 
 [[style]]
@@ -385,7 +421,7 @@ scrollbar_background:                   10191F4C
 cursor:                                 26B2B2FF
 cursor_inactive:                        196666FF
 paste_animation:                        1C4449FF
-splitter:                               21333FFF
+splitter:                               10191FFF
 splitter_hover:                         1C4449FF
 ruler:                                  FCEDFC26
 indent_guide:                           FCEDFC26
@@ -397,6 +433,8 @@ shadow_transparent:                     0E161C00
 text_input_label:                       3B4450FF
 char_under_cursor:                      FFFFFFFF
 bracket_highlight:                      E8FCFE30
+active_pane_border:                     19666688
+inactive_pane_dim_overlay:              10191FFF
 
 ui_default:                             BFC9DBFF
 ui_dim:                                 87919DFF

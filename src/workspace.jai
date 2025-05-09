@@ -226,8 +226,9 @@ reload_workspace :: (automatic := false) {
     deinit_color_preview();
     deinit_open_file_dialog();
     deinit_file_watcher();
+    deinit_cursor_history();
     deinit_buffers();
-    editor_history.initted = false;
+    deinit_editors();
 
     // Reinit things
     init_file_watcher();
@@ -235,8 +236,10 @@ reload_workspace :: (automatic := false) {
     for project_files  free(it);
     array_reset_keeping_memory(*project_files);
     init_workspace();
+    init_editors();
     init_buffers();
 
+    // !!!!!!!! Get rid of this and instead preserve project editors
     // Preserve all editors and buffers which belong to the new workspace. Remove the rest.
     new_open_editors: [..] Editor;
     new_open_buffers: Simple_Bucket_Array(Buffer, items_per_bucket = 1024, max_buckets = 1024);
@@ -293,45 +296,46 @@ reload_workspace :: (automatic := false) {
     bucket_array_reset(*open_buffers);
     open_buffers = new_open_buffers;
 
-    // Reopen visible editors, if any of them are preserved
-    if editors.layout != .None {
-        new_active, active_preserved := table_find(*editor_id_map, editors.active);
-        new_left,   left_preserved   := table_find(*editor_id_map, editors.left);
-        new_right,  right_preserved  := table_find(*editor_id_map, editors.right);
+    // // Reopen visible editors, if any of them are preserved
+    // if editors.layout != .None {
+    //     new_active, active_preserved := table_find(*editor_id_map, editors.active);
+    //     new_left,   left_preserved   := table_find(*editor_id_map, editors.left);
+    //     new_right,  right_preserved  := table_find(*editor_id_map, editors.right);
 
-        if active_preserved then editors.active = new_active;
+    //     if active_preserved then editors.active = new_active;
 
-        if left_preserved && right_preserved {
-            // Keep the layout
-            editors.left  = new_left;
-            editors.right = new_right;
-        } else if left_preserved {
-            editors.layout = .Single;
-            editors.left   = new_left;
-            editors.right  = new_left;
-            editors.active = new_left;
-        } else if right_preserved {
-            editors.layout = .Single;
-            editors.left   = new_right;
-            editors.right  = new_right;
-            editors.active = new_right;
-        } else {
-            editors = Editor_State.{};  // reset everything
-        }
-        if editors.left == editors.right && editors.layout == .Double {
-            editors.active = editors.left;
-            editors.layout = .Single;
-        }
-    }
+    //     if left_preserved && right_preserved {
+    //         // Keep the layout
+    //         editors.left  = new_left;
+    //         editors.right = new_right;
+    //     } else if left_preserved {
+    //         editors.layout = .Single;
+    //         editors.left   = new_left;
+    //         editors.right  = new_left;
+    //         editors.active = new_left;
+    //     } else if right_preserved {
+    //         editors.layout = .Single;
+    //         editors.left   = new_right;
+    //         editors.right  = new_right;
+    //         editors.active = new_right;
+    //     } else {
+    //         editors = Editor_State.{};  // reset everything
+    //     }
+    //     if editors.left == editors.right && editors.layout == .Double {
+    //         editors.active = editors.left;
+    //         editors.layout = .Single;
+    //     }
+    // }
 
     if !automatic then show_open_file_dialog(.search);
 
     init_build_system();  // must do after we've cleared editors and buffers
 
-    if editors.layout == .None {
+    if editors_get_layout() == .None {
         update_window_title();
     } else {
-        make_editor_active(editors.active);
+        // TODO: when we're able to preserve layouts, make sure to run this to update the window title etc
+        // make_editor_active(editors.active);
     }
 
     start_workspace_scan();
@@ -431,6 +435,7 @@ deinit_file_watcher :: () {
 file_list_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> Thread_Continue_Status {
     reset(*scan_memory_pool);
     scan_pool_allocator := get_scan_pool_allocator();
+    table_reset(*file_list_table);
 
     maybe_add_file_to_scan_list :: (file: *File_Visit_Info, userdata: Allocator) {
         if file.is_directory {
@@ -438,12 +443,12 @@ file_list_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> 
             return;
         }
         if file.is_symlink return;
+        if should_ignore_file(file.full_name, check_for_zeroes_if_needed = false) return;
 
-        // NOTE: not checking whether we should ignore the file here,
-        // because it may involve reading the file and checking for zeroes,
-        // and we'd rather it's done in threads (also if later we find there are no
-        // zeroes in the file then the file data will be in cache ready to use)
-        array_add(*files_to_scan, copy_string(file.full_name,, allocator=userdata));
+        full_path := copy_string(file.full_name,, allocator=userdata);
+        if table_find_pointer(*file_list_table, full_path) return;
+        array_add(*files_to_scan, full_path);
+        table_add(*file_list_table, full_path, true);
     }
 
     for project_dirs visit_files(it.path, recursive = true, scan_pool_allocator, maybe_add_file_to_scan_list, visit_directories = true);
@@ -457,11 +462,15 @@ directory_scan_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void
     for path : << file_range {
         auto_release_temp();
         if !should_ignore_file(path) {
-            buffer_id, created := find_or_create_buffer(path, tokenize=false);
+            buffer_id, created := find_or_create_buffer(path);
+            if buffer_id < 0 {
+                log_error("Couldn't open file because path is too long for %: \"%\"\n", OS, path);
+                continue;
+            }
             if !created then reload_from_disk(buffer_id, force = true);  // when refreshing workspace we want up to date data from disk
         }
     }
-    
+
     lock(*open_buffers_lock);
     defer unlock(*open_buffers_lock);
     for *open_buffers {
@@ -594,6 +603,7 @@ scanner_thread_group: Thread_Group;
 
 scan_memory_pool: Flat_Pool;
 files_to_scan: [..] string;
+file_list_table: Table(string, bool);  // to avoid duplicates
 
 file_list_ready       := false;
 num_jobs_to_complete  := 0;

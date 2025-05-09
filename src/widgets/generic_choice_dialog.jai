@@ -5,10 +5,23 @@ dialog_handle_event :: (using dialog: *Generic_Choice_Dialog, event: Input.Event
             case .escape;                   #through;
             case .close_dialog;             hide_dialog(dialog)   ;                         return true;
 
-            case .open_entry_in_place;      dialog.open_entry_in_place(); return true;
-            case .open_entry_on_the_side;   if dialog.open_entry_on_the_side  then dialog.open_entry_on_the_side();  else dialog.open_entry_in_place(); return true;
-            case .open_entry_on_the_left;   if dialog.open_entry_on_the_left  then dialog.open_entry_on_the_left();  else dialog.open_entry_in_place(); return true;
-            case .open_entry_on_the_right;  if dialog.open_entry_on_the_right then dialog.open_entry_on_the_right(); else dialog.open_entry_in_place(); return true;
+            case .open_entry;               dialog.open_entry(.in_place);       return true;
+            case .open_entry_in_side_pane;  dialog.open_entry(.on_the_side);    return true;
+
+            case .switch_to_left_pane;      dialog.open_entry(.left);           return true;
+            case .switch_to_right_pane;     dialog.open_entry(.right);          return true;
+            case .switch_to_top_pane;       dialog.open_entry(.top);            return true;
+            case .switch_to_bottom_pane;    dialog.open_entry(.bottom);         return true;
+
+            case .switch_to_pane_1;         if dialog.open_entry_in_pane then dialog.open_entry_in_pane(1);       return true;
+            case .switch_to_pane_2;         if dialog.open_entry_in_pane then dialog.open_entry_in_pane(2);       return true;
+            case .switch_to_pane_3;         if dialog.open_entry_in_pane then dialog.open_entry_in_pane(3);       return true;
+            case .switch_to_pane_4;         if dialog.open_entry_in_pane then dialog.open_entry_in_pane(4);       return true;
+            case .switch_to_pane_5;         if dialog.open_entry_in_pane then dialog.open_entry_in_pane(5);       return true;
+            case .switch_to_pane_6;         if dialog.open_entry_in_pane then dialog.open_entry_in_pane(6);       return true;
+            case .switch_to_pane_7;         if dialog.open_entry_in_pane then dialog.open_entry_in_pane(7);       return true;
+            case .switch_to_pane_8;         if dialog.open_entry_in_pane then dialog.open_entry_in_pane(8);       return true;
+            case .switch_to_pane_9;         if dialog.open_entry_in_pane then dialog.open_entry_in_pane(9);       return true;
 
             case .move_up;                  move_dialog_cursor(dialog, -1, wrap = true);    return true;
             case .move_down;                move_dialog_cursor(dialog,  1, wrap = true);    return true;
@@ -32,7 +45,7 @@ dialog_handle_event :: (using dialog: *Generic_Choice_Dialog, event: Input.Event
 
 show_dialog :: (dialog: *Generic_Choice_Dialog) {
     active_global_widget = dialog.global_widget_id;
-    assert(dialog.open_entry_in_place != null, "Generic dialogs must define open_entry_in_place and this one doesn't. This is a bug.");
+    assert(dialog.open_entry != null, "Generic dialogs must define open_entry and this one doesn't. This is a bug.");
     text_input_fully_clear(*dialog.input);
     refresh_dialog_entries(dialog);
     if dialog.on_show then dialog.on_show();
@@ -106,7 +119,7 @@ Generic_Choice_Dialog :: struct(Entry_Details: Type) {
     selected_by_mouse: s64 = -1;  // to remember which entry the left mouse button went down on
 
     scroll_y: s32;
-    scroll_anim := #run Tween_Animation(s32).{ speed = 0.1, func = .lerp };
+    scroll_anim := #run Tween_Animation(s32).{ duration = 0.1, func = .lerp };
     per_page: s64 = 10;
     scroll_to_cursor: Scroll_Mode = .no;
 
@@ -125,8 +138,6 @@ Generic_Choice_Dialog :: struct(Entry_Details: Type) {
     on_move: () -> ();
     on_show: () -> ();
     on_hide: () -> ();
-    open_entry_in_place:     () -> ();
-    open_entry_on_the_side:  () -> ();
-    open_entry_on_the_left:  () -> ();
-    open_entry_on_the_right: () -> ();
+    open_entry: (placement: Editor_Placement) -> ();
+    open_entry_in_pane: (number: s64) -> ();
 }

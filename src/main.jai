@@ -38,6 +38,7 @@ main :: () {
     init_file_watcher();
     defer deinit_file_watcher();
 
+    init_editors();
     init_buffers();
     load_global_config(fallback_to_default_on_failure = true);
 
@@ -232,7 +233,7 @@ main :: () {
 
         for * editor : open_editors {
             using editor;
-            cursor_moved = .has_not_moved;
+            cursor_moved = false;
             if old_line_height != line_height {
                 // Adjust viewport position
                 lines_scrolled := viewport.top / old_line_height;
@@ -281,12 +282,14 @@ main :: () {
 
             // Maybe handle a common action that applies to all widgets
             handled := false;
+            lingering_action_activated_this_frame = false;
 
             // Pass events to the active widget.
             // Note that the active widget may change during the frame, so the following events
             // will be sent to the new widget, that's why we check global widget for each event.
             if #complete active_global_widget == {
                 case .editors;                      handled = editors_handle_event(event);
+                case .build_panel;                  handled = editors_handle_event(event);
                 case .finder;                       handled = finder_handle_event(event);
                 case .open_file_dialog;             handled = open_file_dialog_handle_event(event);
                 case .delete_file_dialog;           handled = dialog_handle_event(*delete_file_dialog, event);
@@ -302,7 +305,7 @@ main :: () {
 
             if !handled {
                 action := map_event_to_action(event, Action_Editors);
-                handled = handle_common_editor_action(action);
+                handled = handle_common_editor_action(action, event = *event);
             }
             if !handled {
                 action := map_event_to_action(event, Action_Build);
@@ -320,8 +323,12 @@ main :: () {
                 if event.type == .KEYBOARD && event.key_code == #char "Q" && event.key_pressed && event.cmd_meta_pressed then num_text_input_events_to_ignore += 1;
             }
 
-            key_sequence_input_process_event(event, handled);
+            handled = key_sequence_input_process_event(event, handled);
+
+            if handled && !lingering_action_activated_this_frame then clear_all_lingering_actions();
         }
+
+        maybe_deactivate_lingering_actions();
 
         execute_deferred_actions();
 
@@ -333,7 +340,7 @@ main :: () {
 
         pointer_end_frame();
 
-        maybe_save_editor_history();
+        maybe_save_cursor_history();
 
         reset_temporary_storage();
 
@@ -362,7 +369,7 @@ main :: () {
     }
 }
 
-handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placement = .in_place) -> handled: bool {
+handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placement = .in_place, event: *Input.Event = null) -> handled: bool {
     if action == {
         case .quit;                                             defer_action_quit();                                return true;
 
@@ -388,12 +395,12 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
 
         case .go_to_line;                                       show_go_to_line_dialog();                           return true;
         case .create_new_file;                                  editors_create_new_file(placement);                 return true;
-        case .create_new_file_on_the_side;                      editors_create_new_file(.on_the_side);              return true;
+        case .create_new_file_in_side_pane;                     editors_create_new_file(.on_the_side);              return true;
 
         case .go_to_next_build_error;                           go_to_next_build_error(.in_place);                  return true;
-        case .go_to_next_build_error_on_the_side;               go_to_next_build_error(.on_the_side);               return true;
+        case .go_to_next_build_error_in_side_pane;              go_to_next_build_error(.on_the_side);               return true;
         case .go_to_previous_build_error;                       go_to_previous_build_error(.in_place);              return true;
-        case .go_to_previous_build_error_on_the_side;           go_to_previous_build_error(.on_the_side);           return true;
+        case .go_to_previous_build_error_in_side_pane;          go_to_previous_build_error(.on_the_side);           return true;
 
         case .open_file_by_name;                                show_open_file_dialog(.search);                     return true;
         case .navigate_to_file;                                 show_open_file_dialog(.navigate);                   return true;
@@ -403,17 +410,43 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .show_commands;                                    show_dialog(*commands_dialog);                      return true;
         case .toggle_fullscreen;                                editor_toggle_fullscreen();                         return true;
 
-        case .move_to_previous_editor_history;                  move_to_previous_editor_history();                  return true;
-        case .move_to_next_editor_history;                      move_to_next_editor_history();                      return true;
+        case .cursor_go_back;                                   action_cursor_go_back();                            return true;
+        case .cursor_go_forward;                                action_cursor_go_forward();                         return true;
 
-        case .move_to_previous_buffer;                          move_to_previous_editor_history(by_buffer = true);  return true;
-        case .move_to_next_buffer;                              move_to_next_editor_history    (by_buffer = true);  return true;
+        case .go_to_previous_buffer;                            action_go_to_previous_buffer(event);                return true;
+        case .go_to_next_buffer;                                action_go_to_next_buffer(event);                    return true;
 
         case .build_panel_toggle;                               build_panel_toggle();                               return true;
         case .build_panel_toggle_focus;                         build_panel_toggle_focus();                         return true;
 
         case .build_kill_running_command;                       build_kill_running_command();                       return true;
         case .build_clear_output;                               build_clear_output();                               return true;
+
+        case .switch_to_left_pane;                              switch_to_pane(.left);                              return true;
+        case .switch_to_right_pane;                             switch_to_pane(.right);                             return true;
+        case .switch_to_top_pane;                               switch_to_pane(.top);                               return true;
+        case .switch_to_bottom_pane;                            switch_to_pane(.bottom);                            return true;
+        case .switch_to_side_pane;                              switch_to_pane(.on_the_side);                       return true;
+
+        case .switch_to_pane_1;                                 switch_to_pane_by_number(1);                        return true;
+        case .switch_to_pane_2;                                 switch_to_pane_by_number(2);                        return true;
+        case .switch_to_pane_3;                                 switch_to_pane_by_number(3);                        return true;
+        case .switch_to_pane_4;                                 switch_to_pane_by_number(4);                        return true;
+        case .switch_to_pane_5;                                 switch_to_pane_by_number(5);                        return true;
+        case .switch_to_pane_6;                                 switch_to_pane_by_number(6);                        return true;
+        case .switch_to_pane_7;                                 switch_to_pane_by_number(7);                        return true;
+        case .switch_to_pane_8;                                 switch_to_pane_by_number(8);                        return true;
+        case .switch_to_pane_9;                                 switch_to_pane_by_number(9);                        return true;
+
+        case .split_left;                                       split_active_pane(.left);                           return true;
+        case .split_right;                                      split_active_pane(.right);                          return true;
+        case .split_top;                                        split_active_pane(.top);                            return true;
+        case .split_bottom;                                     split_active_pane(.bottom);                         return true;
+
+        case .reopen_closed_editor;                             action_reopen_closed_editor();                      return true;
+
+        case .rotate_panes_clockwise;                           rotate_panes(editors.root, .clockwise);             return true;
+        case .rotate_panes_counterclockwise;                    rotate_panes(editors.root, .counterclockwise);      return true;
 
         // TODO: search_in_buffer
         case .search_in_project;
@@ -435,7 +468,7 @@ maybe_execute_a_build_command :: (action: Action_Build) -> handled: bool {
             }
         }
     } else if config.settings.save_current_buffer_on_build {
-        editor, buffer := get_active_editor_and_buffer();
+        editor, buffer := get_visible_editor_and_buffer();
         if editor && buffer.has_file save_buffer(buffer, editor.buffer_id);
     }
 
@@ -496,6 +529,8 @@ init_fonts_and_dependent_things :: () {
     font_icons_very_small = Simp.get_font_at_size(FONT_ICONS.name, FONT_ICONS.data, cast(int) (font_icons_very_small_size * dpi_scale));
     assert(font_icons_very_small != null, "Couldn't init very small icon font\n");
 
+    status_bar_height = font_ui_line_height * 1.6;
+
     // WORKAROUND:
     // Make a dummy call with most common chars for each font so that
     // we have all the font atlases loaded in the GPU memory once
@@ -527,7 +562,7 @@ init_fonts_and_dependent_things :: () {
     char_x_advance        = cast(float) font_main.x_advance;
     old_line_height       = line_height;
     line_height           = floor(cast(float) font_main.default_line_spacing * cast(float) config.settings.line_height_scale_percent / 100.0);
-    scrollbar_size        = floor(1.5 * char_size);
+    scrollbar_width       = floor(1.5 * char_size) * config.settings.scrollbar_width_scale;
     rounding_radius       = floor(char_size / 2);
     rounding_radius_large = floor(char_size / 1.5);
     rounding_radius_small = floor(char_size / 3);
@@ -676,7 +711,7 @@ panic :: (format_string: string, args: .. Any, exit_code : s32 = 1) {
 panic_messagebox :: (format_string: string, args: .. Any) {
     #if OS == .WINDOWS {
         message := tprint(format_string, ..args);
-        MessageBoxW(null, utf8_to_wide_new(message,, allocator = temp), utf8_to_wide_new("Fatal Error",, allocator = temp), MB_OK);
+        MessageBoxW(null, utf8_to_wide(message,, allocator = temp), utf8_to_wide("Fatal Error",, allocator = temp), MB_OK);
         exit(1);
     } else {
         panic(format_string, ..args);
@@ -689,6 +724,18 @@ unimplemented :: (loc := #caller_location) {
 
 key_state :: inline (key: Input.Key_Code) -> Input.Key_Current_State {
     return Input.input_button_states[key];
+}
+
+ctrl_pressed :: inline () -> bool {
+    return key_state(.CTRL) & .DOWN != 0;
+}
+
+alt_pressed :: inline () -> bool {
+    return key_state(.ALT) & .DOWN != 0;
+}
+
+cmd_meta_pressed :: inline () -> bool {
+    return key_state(.CMD) & .DOWN != 0;
 }
 
 shift_pressed :: inline () -> bool {
@@ -876,7 +923,8 @@ font_ui_medium_line_height: float;
 rounding_radius:            float;
 rounding_radius_large:      float;
 rounding_radius_small:      float;
-scrollbar_size:             float;
+scrollbar_width:            float;
+status_bar_height:          float;
 
 // This will be set to `true` in `refresh_config()` to signal that the
 // next window resize event should be handled even if the window doesn't actually
@@ -894,6 +942,7 @@ active_global_widget: Active_Global_Widget = .editors;
 Active_Global_Widget :: enum {
     editors;
     finder;
+    build_panel;
     open_file_dialog;
     delete_file_dialog;
     go_to_line_dialog;
@@ -933,8 +982,8 @@ BUILTIN_THEMES :: #run -> [] Builtin_Theme {
     return themes;
 }
 
-// A string which contains the path to a file which was just drag-and-dropped into the editor (for the draw code to use)
-just_dropped_file := "";
+// A list of files drag-and-dropped into the editor (for the drawing code to use)
+just_dropped_files: [] string;
 
 cpu_info: Cpu_X86;
 
@@ -963,6 +1012,8 @@ focus_allocator: Allocator;
 #load "meow_hash.jai";
 #load "user_messages.jai";
 #load "deferred_actions.jai";
+#load "history.jai";
+#load "ring_buffer.jai";
 
 #load "widgets/generic_choice_dialog.jai";
 #load "widgets/generic_confirm_dialog.jai";
@@ -993,6 +1044,7 @@ focus_allocator: Allocator;
 #load "langs/glsl.jai";
 #load "langs/hlsl.jai";
 #load "langs/golang.jai";
+#load "langs/java.jai";
 #load "langs/js.jai";
 #load "langs/json.jai";
 #load "langs/lua.jai";
@@ -1009,6 +1061,7 @@ focus_allocator: Allocator;
 #load "langs/markdown.jai";
 #load "langs/batch.jai";
 #load "langs/swift.jai";
+#load "langs/ini.jai";
 
 #if OS == .WINDOWS {
     #load "platform/windows.jai";
@@ -1021,7 +1074,7 @@ focus_allocator: Allocator;
     #assert false, "Unsupported OS";
 }
 
-using Basic :: #import "Basic"()(MEMORY_DEBUGGER = DEBUG, TEMP_ALLOCATOR_POISON_FREED_MEMORY = DEBUG);
+using Basic :: #import "Basic"()(MEMORY_DEBUGGER = DEBUG, TEMP_ALLOCATOR_POISON_FREED_MEMORY = false);
 #import "Atomics";
 #import "Compiler";
 #import "File";

@@ -18,7 +18,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
 	type_kind := Keyword.kw_struct;
 	is_defining_enum := false;
 	is_macro_gooning := false;
-	
+
 	is_defining_vk_handle := false;
 
     while true {
@@ -35,8 +35,8 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
 		    token_string: string;
             token_string.data = bytes.data + token.start;
             token_string.count = token.len;
-            
-            
+
+
 
             if token_string[0] == #char "\"" {
                 token_string.count -= 1;
@@ -51,7 +51,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
             abs_path, ok := replace(get_absolute_path(include_full_path,,temp), "\\", "/");
 
             index, found := table_find(*buffers_table, abs_path);
-            
+
             if (found) {
 
                 max_depth :: 8;
@@ -70,7 +70,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
                         add_recursive(parent, it, depth);
                     }
                 }
-                
+
                 add(*included_buffer_indices, index);
                 depth := 0;
                 add_recursive(buffer, index, *depth);
@@ -78,7 +78,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
 
             token_string = trim(token_string);
 		}
-		
+
 		if (is_looking_for_type_ident && (token.type == .identifier || token.type == .type) && type_ident_defn_depth == 0) {
             is_looking_for_type_ident = false;
             is_defining_vk_handle = false;
@@ -87,7 +87,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
             token_string.data = bytes.data + token.start;
             token_string.count = token.len;
 
-            
+
             define_word(buffer, token_string, .type);
 
 
@@ -95,7 +95,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
         else memset(tokens.data + token.start, xx token.type, token.len);
 		if token.type == .identifier {
             defn := get_word_definition(buffer, string.{token.len, bytes.data + token.start});
-            
+
             if defn & .enum_constant
                 memset(tokens.data + token.start, xx Token_Type.enum_variant, token.len);
             if defn & .type
@@ -114,11 +114,11 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
 				is_in_STR = true;
 			}
         }
-        
+
         if (token.type == .keyword && (token.keyword == .kw_VK_DEFINE_HANDLE || token.keyword == .kw_VK_DEFINE_NON_DISPATCHABLE_HANDLE)) {
             is_defining_vk_handle = true;
         }
-        
+
         if (is_defining_vk_handle && token.type == .punctuation && token.punctuation == .l_paren) {
             is_looking_for_type_ident = true;
         }
@@ -128,7 +128,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
             is_looking_for_type_ident = true;
             type_kind = token.keyword;
         }
-        
+
         if is_looking_for_type_ident_or_defn && token.type == .punctuation && token.punctuation == .l_brace {
             is_looking_for_type_ident_or_defn = false;
             is_looking_for_type_ident = false;
@@ -165,16 +165,16 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
             is_typedeffing = false;
             is_looking_for_type_ident = true;
         }
-        
+
         if (is_looking_for_type_ident && !is_defining_vk_handle && token.type == .punctuation && token.punctuation == .l_paren) {
             is_modifying_type_ident = true;
             is_looking_for_type_ident = false;
-        } 
-        
+        }
+
         if (is_modifying_type_ident && token.type == .punctuation && token.punctuation == .l_paren) {
             modifying_type_ident_depth += 1;
         }
-        
+
         if (is_modifying_type_ident && token.type == .punctuation && token.punctuation == .r_paren) {
             modifying_type_ident_depth -= 1;
             if (modifying_type_ident_depth == 0) {
@@ -182,14 +182,14 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
                 is_looking_for_type_ident = true;
             }
         }
-        
+
         if is_defining_enum  && token.type == .punctuation && token.punctuation == .r_brace {
             is_defining_enum = false;
         }
-        
+
         if is_looking_for_type_ident && token.type == .punctuation && token.punctuation == .l_brace {
             type_ident_defn_depth += 1;
-            
+
             if (type_kind == .kw_enum)  is_defining_enum = true;
         }
         if is_looking_for_type_ident && token.type == .punctuation && token.punctuation == .r_brace {
@@ -197,7 +197,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
             is_defining_enum = false;
             if type_ident_defn_depth < 0  type_ident_defn_depth = 0;
         }
-        
+
         if (is_defining_enum && token.type == .identifier) {
             token_string: string;
             token_string.data = bytes.data + token.start;
@@ -205,7 +205,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
             define_word(buffer, token_string, .enum_constant);
             memset(tokens.data + token.start, xx Token_Type.enum_variant, token.len);
         }
-        
+
         if prev_token.type == .directive && prev_token.directive == .di_define {
             token_string: string;
             token_string.data = bytes.data + token.start;
@@ -222,7 +222,7 @@ tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
 					str_depth -= 1;
 				}
 			}
-			
+
 			memset(tokens.data + token.start, xx Token_Type.punctuation, token.len);
 		}
 
@@ -649,7 +649,7 @@ VALUE_KEYWORDS :: string.[
 ];
 
 MODIFIER_KEYWORDS :: string.[
-    "const", "extern", "register", "signed", "static", "unsigned", "volatile", "_Thread_local",
+    "const", "constexpr", "extern", "register", "signed", "static", "unsigned", "volatile", "thread_local", "_Thread_local",
 ];
 
 DIRECTIVES :: string.[

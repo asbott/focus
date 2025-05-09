@@ -47,7 +47,6 @@ line_height_scale_percent:                          120
 max_editor_width:                                   -1
 can_cancel_go_to_line:                              true
 copy_whole_line_without_selection:                  false
-editor_history_size:                                1024
 line_wrap_is_on_by_default:                         false
 show_line_numbers:                                  false
 show_ruler_at_column:                               0
@@ -59,7 +58,7 @@ auto_surround_with_brackets_and_quotes:             false
 auto_close_brackets:                                false
 prefer_system_file_dialogs:                         false  # Windows only
 persist_local_search_results:                       false  # if true, search results will stay highlighted and you have to dismiss them using the `escape` action
-load_most_recent_project_on_start:                  false
+load_most_recent_project_on_start:                  true
 projects_sorting_order:                             most_recent_first
 
 build_panel_stays_in_one_place:                     false  # if false, the build panel will flip to the inactive pane in two pane layouts
@@ -82,6 +81,16 @@ status_bar_show_cursors_off_screen:                 true
 status_bar_show_line_col:                           true
 status_bar_show_indentation:                        true
 status_bar_show_selected_text_length:               false
+
+show_scrollbar_marks:                               true
+scrollbar_width_scale:                              1.0
+scrollbar_min_opacity:                              0.0   # if you want the scrollbar to be always visible, set this to 1.0
+scrollbar_max_opacity:                              1.0
+scrollbar_fade_in_sensitivity:                      10.0  # controls when the scrollbar appears as the mouse pointer gets close
+scrollbar_fade_out_delay_seconds:                   1.0   # how long the scrollbar stays visible after scrolling
+
+active_pane_border_width:                           1.0   # set the width to 0.0 to disable
+inactive_pane_dim_overlay_opacity:                  0.1   # controls how dim the inactive panes should be
 
 # NOTE: some settings can be specified for a subset of files, based on their language or a wildcard,
 # for example:
@@ -123,10 +132,11 @@ draw_indent_guides:                                 false
 
 
 # Example error regexes:
-# For jai:    ^(?P<file>.*):(?P<line>\d+),(?P<col>\d+): (?P<type>Error|Warning|Info|...):* (?P<msg>.*)|^(?P<msg1>.*error LNK.*)
-# For msvc:   ^(?P<file>.*)\((?P<line>\d+),?(?P<col>\d+)?\)[ ]?: (?P<type>error|warning) (?P<msg>.*)$
-# For golang: ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<msg>.*)$
-# For gcc:    ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<type>error|warning): (?P<msg>.*) (\[(?P<msg1>.*)\])?$
+# For Jai:    ^(?P<file>.*):(?P<line>\d+),(?P<col>\d+): (?P<type>Error|Warning|Info|...):* (?P<msg>.*)|^(?P<msg1>.*error LNK.*)
+# For MSVC:   ^(?P<file>.*)\((?P<line>\d+),?(?P<col>\d+)?\)[ ]?: (?P<type>error|warning) (?P<msg>.*)$
+# For Golang: ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<msg>.*)$
+# For Gcc:    ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<type>error|warning): (?P<msg>.*) (\[(?P<msg1>.*)\])?$
+# For Odin:   ^(?P<file>.*)\((?P<line>\d+):(?P<col>\d+)\) (?P<type>Error|Syntax Error): (?P<msg>.*)$
 # ... let us know what regex works for you and we'll add it here
 
 # NOTE:
@@ -177,11 +187,11 @@ Ctrl-[                      unindent
 Ctrl-S                      save
 Ctrl-Shift-S                save_as
 
-Alt-Minus                   move_to_previous_editor_history
-Alt-Plus                    move_to_next_editor_history
+Alt-Minus                   cursor_go_back
+Alt-Plus                    cursor_go_forward
 
-Ctrl-PageUp                 move_to_previous_buffer
-Ctrl-PageDown               move_to_next_buffer
+Ctrl-PageUp                 go_to_previous_buffer
+Ctrl-PageDown               go_to_next_buffer
 
 Ctrl-/                      toggle_comment
 Ctrl-L                      select_line
@@ -216,16 +226,27 @@ NumpadEnter                 break_line
 Ctrl-NumpadEnter            new_line_below_without_breaking
 Ctrl-Shift-NumpadEnter      new_line_above_without_breaking
 
-Ctrl-1                      switch_to_left_editor
-Ctrl-2                      switch_to_right_editor
-Ctrl-,                      switch_to_other_editor
+Ctrl-Alt-S ArrowLeft        move_editor_left
+Ctrl-Alt-S ArrowRight       move_editor_right
+Ctrl-Alt-S ArrowUp          move_editor_top
+Ctrl-Alt-S ArrowDown        move_editor_bottom
+
+Ctrl-Alt-X ArrowLeft        split_left
+Ctrl-Alt-X ArrowRight       split_right
+Ctrl-Alt-X ArrowUp          split_top
+Ctrl-Alt-X ArrowDown        split_bottom
+
+Ctrl-Alt-D ArrowLeft        duplicate_editor_left
+Ctrl-Alt-D ArrowRight       duplicate_editor_right
+Ctrl-Alt-D ArrowUp          duplicate_editor_top
+Ctrl-Alt-D ArrowDown        duplicate_editor_bottom
+
 Ctrl-Shift-,                duplicate_editor
 
-Ctrl-Alt-Shift-ArrowLeft    move_editor_to_the_left
-Ctrl-Alt-Shift-ArrowRight   move_editor_to_the_right
+Ctrl-Shift-T                reopen_closed_editor
 
 Ctrl-N                      create_new_file
-Ctrl-Shift-N                create_new_file_on_the_side
+Ctrl-Shift-N                create_new_file_in_side_pane
 
 Alt-Shift-ArrowUp           create_cursor_above
 Alt-Shift-ArrowDown         create_cursor_below
@@ -239,10 +260,6 @@ Ctrl-Shift-Alt-N            open_another_editor_instance
 
 [open file dialog]
 
-Enter                       open_entry_in_place
-Ctrl-Enter                  open_entry_on_the_side
-Ctrl-1                      open_entry_on_the_left
-Ctrl-2                      open_entry_on_the_right
 Shift-Enter                 open_entry_in_explorer
 
 Tab                         open_directory
@@ -252,19 +269,11 @@ Backspace                   pop_directory
 
 [search dialog]
 
-Enter                       open_entry_in_place
-Ctrl-Enter                  open_entry_on_the_side
-Ctrl-1                      open_entry_on_the_left
-Ctrl-2                      open_entry_on_the_right
-
 Shift-Enter                 move_up  # an alternative way to move
 
 Alt-C                       toggle_case_sensitive
 Alt-W                       toggle_whole_word
 Alt-R                       toggle_regex_search
-
-Tab                         go_to_next_input
-Shift-Tab                   go_to_previous_input
 
 
 [common]
@@ -302,8 +311,14 @@ Ctrl-K                      cut_to_end_of_line
 Ctrl-Shift-Delete           delete_to_end_of_line
 Ctrl-Shift-Backspace        delete_to_start_of_line
 
-Ctrl-W                      close_current_editor
-Ctrl-Shift-W                close_other_editor
+Ctrl-W                      close_editor
+
+Ctrl-Shift-W                close_pane
+Ctrl-Shift-Alt-W            close_other_panes
+Ctrl-Alt-W ArrowLeft        close_left_pane
+Ctrl-Alt-W ArrowRight       close_right_pane
+Ctrl-Alt-W ArrowUp          close_top_pane
+Ctrl-Alt-W ArrowDown        close_bottom_pane
 
 Escape                      escape  # combines close_dialog and remove_additional_cursors
 
@@ -312,6 +327,28 @@ Ctrl-Shift-L                toggle_expand
 Ctrl-B                      build_panel_toggle
 
 F11                         toggle_fullscreen
+
+Enter                       open_entry
+Ctrl-Enter                  open_entry_in_side_pane
+
+Ctrl-Alt-Shift-ArrowLeft    switch_to_left_pane
+Ctrl-Alt-Shift-ArrowRight   switch_to_right_pane
+Ctrl-Alt-Shift-ArrowUp      switch_to_top_pane
+Ctrl-Alt-Shift-ArrowDown    switch_to_bottom_pane
+Ctrl-,                      switch_to_side_pane
+
+Ctrl-1                      switch_to_pane_1
+Ctrl-2                      switch_to_pane_2
+Ctrl-3                      switch_to_pane_3
+Ctrl-4                      switch_to_pane_4
+Ctrl-5                      switch_to_pane_5
+Ctrl-6                      switch_to_pane_6
+Ctrl-7                      switch_to_pane_7
+Ctrl-8                      switch_to_pane_8
+Ctrl-9                      switch_to_pane_9
+
+Tab                         focus_next_ui_element
+Shift-Tab                   focus_previous_ui_element
 
 # {Shift}- means shift is optional, the key combination will still be matched.
 # NOTE: in this editor the Shift key is hard-coded to extend selection when held
@@ -354,9 +391,9 @@ Ctrl-0                      reset_font_size_to_default
 Ctrl-MouseMiddle            reset_font_size_to_default
 
 F8                          go_to_next_build_error
-Ctrl-F8                     go_to_next_build_error_on_the_side
+Ctrl-F8                     go_to_next_build_error_in_side_pane
 Shift-F8                    go_to_previous_build_error
-Shift-Ctrl-F8               go_to_previous_build_error_on_the_side
+Shift-Ctrl-F8               go_to_previous_build_error_in_side_pane
 
 
 [[style]]
@@ -399,7 +436,7 @@ scrollbar_background:                   10191F4C
 cursor:                                 26B2B2FF
 cursor_inactive:                        196666FF
 paste_animation:                        1C4449FF
-splitter:                               21333FFF
+splitter:                               10191FFF
 splitter_hover:                         1C4449FF
 ruler:                                  FCEDFC26
 indent_guide:                           FCEDFC26
@@ -411,6 +448,8 @@ shadow_transparent:                     0E161C00
 text_input_label:                       3B4450FF
 char_under_cursor:                      FFFFFFFF
 bracket_highlight:                      E8FCFE30
+active_pane_border:                     19666688
+inactive_pane_dim_overlay:              10191FFF
 
 ui_default:                             BFC9DBFF
 ui_dim:                                 87919DFF

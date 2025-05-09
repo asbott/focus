@@ -1,7 +1,7 @@
 init_build_system :: () {
     assert(build_buffer_id < 0 && build_editor_id < 0, "Build system already initialised");
 
-    build_buffer_id = find_or_create_an_empty_buffer();
+    build_buffer_id = create_an_empty_buffer();
     build_editor_id = find_or_create_editor(build_buffer_id);
     editor, buffer := *open_editors[build_editor_id], *open_buffers[build_buffer_id];
     buffer.readonly = true;
@@ -234,6 +234,7 @@ show_build_panel :: () {
     // Maybe hide other popups
     if #complete active_global_widget == {
         case .editors;                  // nothing to do
+        case .build_panel;              // nothing to do
 
         case .unsaved_buffers_dialog;   // do nothing, we still want to see them
         case .confirm_overwrite_dialog; // do nothing, we still want to see them
@@ -246,10 +247,7 @@ show_build_panel :: () {
         case .switch_to_project_dialog;         #through;
         case .theme_dialog;                     #through;
         case .language_dialog;                  #through;
-        case .commands_dialog;                  active_global_widget = .editors;
-    }
-    if !build_panel_is_shown {
-        previously_active_editor = editors.active;
+        case .commands_dialog;                  active_global_widget = .editors;  // NOTE: build panel will be shown but not focused
     }
     build_panel_is_shown = true;
 }
@@ -263,26 +261,18 @@ is_build_panel :: inline (editor_id: s64) -> bool {
     return editor_id == build_editor_id;
 }
 
-build_panel_on_activate :: () {
-    previously_active_editor = editors.active;
-}
-
 build_panel_lose_focus :: () {
-    // Sometimes we might want to make the previously active editor active, e.g. when deciding on new buffer placement
-    if editors.active != editors.left && editors.active != editors.right && editors.left >= 0 && editors.right >= 0 {
-        // If we still have the same editors open when the panel was opened, go back to the previously active one,
-        // otherwise default to left.
-        make_editor_active(ifx previously_active_editor == editors.right then editors.right else editors.left);
-    }
+    if active_global_widget == .build_panel then active_global_widget = .editors;
 }
 
 build_panel_grab_focus :: () {
     if !build_panel_is_shown then show_build_panel();
-    make_editor_active(build_editor_id);
+    active_global_widget = .build_panel;
+    cursors_start_blinking();
 }
 
 build_panel_toggle_focus :: () {
-    if editors.active == build_editor_id {
+    if active_global_widget == .build_panel {
         build_panel_lose_focus();
     } else {
         build_panel_grab_focus();
@@ -316,18 +306,22 @@ build_panel_set_width :: (width: float) {
 build_panel_get_position :: () -> Build_Panel_Position {
     if config.settings.build_panel_stays_in_one_place return .right;
 
-    if #complete editors.layout == {
-        case .None;     saved_position = .right;
-        case .Single;   saved_position = .right;
-        case .Double;   if editor_closing_id >= 0 then saved_position = .right;
-                        else if editors.active == editors.left  then saved_position = .right;
-                        else if editors.active == editors.right then saved_position = .left;
+    // Get the center of the active pane
+    leaf_pane_rects := gather_leaf_pane_rects();
+    center := Vector2.{ -1, -1 };
+    for leaf_pane_rects {
+        if it.pane == editors.active_pane { center = center_of(it.rect); break; }
     }
-    return saved_position;
+
+    if center.x <= screen.x + screen.w / 2 {
+        return .right;
+    } else {
+        return .left;
+    }
 }
 
 build_panel_is_active :: inline () -> bool {
-    return build_panel_is_shown && build_editor_id >= 0 && editors.active == build_editor_id;
+    return build_panel_is_shown && active_global_widget == .build_panel;
 }
 
 cursor_is_on_build_error :: (cursor: Cursor) -> bool {
@@ -503,16 +497,10 @@ print_to_output_panel_from_main_thread :: (s: string, mark_as: Buffer_Region.Kin
 substitute_variables :: (using work: *Build_Thread_Work) {
     // Figure out the current file
     file := "";
-    {
-        current_editor_id := editors.active;
-        if is_build_panel(current_editor_id) then current_editor_id = previously_active_editor;
-        if is_build_panel(current_editor_id) then current_editor_id = editors.left;
-        if is_build_panel(current_editor_id) then current_editor_id = editors.right;
-
-        if current_editor_id >= 0 && current_editor_id < open_editors.count {
-            buffer := open_buffers[open_editors[current_editor_id].buffer_id];
-            if buffer.has_file then file = copy_string(buffer.file.full_path);
-        }
+    active_pane_editor_id := get_active_editor_id();
+    if active_pane_editor_id > 0 {
+        buffer := open_buffers[open_editors[active_pane_editor_id].buffer_id];
+        if buffer.has_file then file = copy_string(buffer.file.full_path);
     }
 
     file_vars_are_used := false;
@@ -767,10 +755,8 @@ go_to_current_build_error :: (placement: Editor_Placement = .in_place, show_erro
         cursor.pos = build_error.file_path_location.end;
         if buffer.dirty then rescan_for_lines(buffer);
         select_line(cursor, buffer);
-        editor.cursor_moved = .jumped;
+        editor.cursor_moved = true;
     }
-
-    old_layout := editors.layout;
 
     // Try to open the file, maybe by prepending the build dir and removing the "./" at the start
     tried_paths: [..] string;
@@ -796,8 +782,6 @@ go_to_current_build_error :: (placement: Editor_Placement = .in_place, show_erro
     editor, buffer := get_active_editor_and_buffer();
     go_to_line(editor, buffer, build_error.line, build_error.col);
 
-    if old_layout == .Single && editors.layout == .Double then editor.scroll_to_cursor = .yes_new_editor;
-
     if show_error {
         if #complete build_error.type == {
             case .error;    add_user_error(build_error.message, dismiss_in_seconds = 15, .build);
@@ -811,9 +795,6 @@ thread_group: Thread_Group;
 
 build_buffer_id := -1;
 build_editor_id := -1;
-
-previously_active_editor := -1;
-saved_position := Build_Panel_Position.right;
 
 build_panel_is_expanded := false;
 

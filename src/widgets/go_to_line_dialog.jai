@@ -7,27 +7,13 @@ go_to_line_dialog_handle_event :: (event: Input.Event) -> handled: bool {
             case .escape;                   #through;
             case .close_dialog;             close_go_to_line_dialog(jump_to_original_cursor = config.settings.can_cancel_go_to_line);
                                             return true;
-            case .open_entry_in_place;      jump_to_line(); close_go_to_line_dialog(); return true;
-            case .open_entry_on_the_side;   jump_to_line(); close_go_to_line_dialog(); return true;
+            case .open_entry;               jump_to_line(); close_go_to_line_dialog(); return true;
+            case .open_entry_in_side_pane;  jump_to_line(); close_go_to_line_dialog(); return true;
         }
 
         old_text := copy_temporary_string(to_string(input.text));
 
         handled := maybe_handle_text_input_event(*input, event);
-        if handled {
-            // Remove any non-digit bytes in case they were pasted
-            new_text := to_bytes(copy_temporary_string(to_string(input.text)));
-            i := 0;
-            for byte : new_text {
-                if #char "0" <= byte && byte <= #char "9" {
-                    input.text[i] = byte;
-                    i += 1;
-                }
-            }
-            input.text.count = cast(s32) i;
-            input.cursor.pos = clamp(input.cursor.pos, 0, xx i);
-            input.cursor.sel = clamp(input.cursor.sel, 0, xx i);
-        }
 
         if old_text != to_string(input.text) then jump_to_line();
 
@@ -76,9 +62,9 @@ close_go_to_line_dialog :: (jump_to_original_cursor := false) {
     } else if jumped {
         // We should remove the selection that was only there for demonstration
         cursor := leave_only_original_cursor(editor);
-        add_paste_animation(editors.active, get_selection(cursor));
+        add_paste_animation(get_active_editor_id(), get_selection(cursor));
         cursor.sel = cursor.pos;
-        editor.cursor_moved = .jumped;
+        editor.cursor_moved = true;
         editor.scroll_to_cursor = .yes;
     }
 }
@@ -87,13 +73,22 @@ close_go_to_line_dialog :: (jump_to_original_cursor := false) {
 #scope_file
 
 jump_to_line :: () {
-    editor, buffer := get_active_editor_and_buffer();
+    editor, buffer := get_visible_editor_and_buffer();
     if !editor || !buffer return;
 
     using go_to_line_dialog;
 
     if !input.text return;
 
+    // Check for any non-digit characters
+    for byte : input.text {
+        if byte < #char "0" || #char "9" < byte {
+            input_is_valid = false;
+            return;
+        }
+    }
+
+    input_is_valid = true;
     jumped = true;
 
     line_num := 0;
@@ -128,6 +123,7 @@ Go_To_Line_Dialog :: struct {
     scroll_to_cursor: Scroll_Mode = .no;
     original_cursor_position: Cursor;
     jumped := false;
+    input_is_valid := true;
 
     input: Text_Input;
 }

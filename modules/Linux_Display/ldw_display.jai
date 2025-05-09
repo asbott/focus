@@ -224,6 +224,40 @@ wm_base_listener :: xdg_wm_base_listener.{
     }
 };
 
+seat_listener :: wl_seat_listener.{
+    capabilities = (data: *void, self: *wl_seat, capabilities: u32) -> void #c_call {
+        d: *Wayland_Display = data;
+
+        if capabilities & wl_seat.capability_pointer {
+            if d.pointer {
+                wl_pointer.release(d.pointer);
+                d.pointer = null;
+            }
+
+            d.pointer = wl_seat.get_pointer(d.seat);
+            wl_proxy_set_user_data(d.pointer, d);
+            wl_pointer.add_listener(d.pointer, *pointer_listener, d);
+        } else if d.pointer {
+            wl_pointer.release(d.pointer);
+            d.pointer = null;
+        }
+
+        if capabilities & wl_seat.capability_keyboard {
+            if d.keyboard {
+                wl_keyboard.release(d.keyboard);
+                d.keyboard = null;
+            }
+
+            d.keyboard = wl_seat.get_keyboard(d.seat);
+            wl_proxy_set_user_data(d.keyboard, d);
+            wl_keyboard.add_listener(d.keyboard, *keyboard_listenter, d);
+        } else if d.keyboard {
+            wl_keyboard.release(d.keyboard);
+            d.keyboard = null;
+        }
+    },
+};
+
 registry_listener :: wl_registry_listener.{
     global = (data: *void, registry: *wl_registry, id: u32, intf: *u8, version: u32) -> void #c_call {
         d: *Wayland_Display = data;
@@ -249,14 +283,7 @@ registry_listener :: wl_registry_listener.{
             }
             case "wl_seat"; {
                 wl_jext_bind(*d.seat, registry, id, version);
-
-                d.pointer = wl_seat.get_pointer(d.seat);
-                wl_proxy_set_user_data(d.pointer, d);
-                wl_pointer.add_listener(d.pointer, *pointer_listener, d);
-
-                d.keyboard = wl_seat.get_keyboard(d.seat);
-                wl_proxy_set_user_data(d.keyboard, d);
-                wl_keyboard.add_listener(d.keyboard, *keyboard_listenter, d);
+                wl_seat.add_listener(d.seat, *seat_listener, d);
 
                 maybe_init_data_device(d);
             }
@@ -283,7 +310,7 @@ registry_listener :: wl_registry_listener.{
 
 data_offer_listener :: wl_data_offer_listener.{
     offer = (data: *void, self: *wl_data_offer, mime_type: *u8) -> void #c_call {
-        ctx: Context;
+        ctx: #Context;
         push_context ctx {
             d : *Wayland_Display = wl_proxy_get_user_data(self);
             mime_s := to_string(mime_type);
@@ -294,7 +321,7 @@ data_offer_listener :: wl_data_offer_listener.{
 
 data_device_listener :: wl_data_device_listener.{
     data_offer = (data: *void, self: *wl_data_device, id: *wl_data_offer) -> void #c_call {
-        ctx: Context;
+        ctx: #Context;
         push_context ctx {
             d : *Wayland_Display = wl_proxy_get_user_data(self);
 
@@ -311,7 +338,7 @@ data_device_listener :: wl_data_device_listener.{
     enter = (data: *void, self: *wl_data_device, serial: u32, surface: *wl_surface,
         x: wl_fixed_t, y: wl_fixed_t, id: *wl_data_offer) -> void #c_call
     {
-        ctx: Context;
+        ctx: #Context;
         push_context ctx {
             d: *Wayland_Display = wl_proxy_get_user_data(self);
             has_file_list := data_offer_has_mime_type(d, MIME_TYPE_FILE_LIST);
@@ -341,7 +368,7 @@ data_device_listener :: wl_data_device_listener.{
     },
 
     leave = (data: *void, self: *wl_data_device) -> void #c_call {
-        ctx: Context;
+        ctx: #Context;
         push_context ctx {
             d: *Wayland_Display = wl_proxy_get_user_data(self);
             data_offer_reset(d);
@@ -349,7 +376,7 @@ data_device_listener :: wl_data_device_listener.{
     },
 
     motion = (data: *void, self: *wl_data_device, time: u32, x: wl_fixed_t, y: wl_fixed_t) -> void #c_call {
-        ctx: Context;
+        ctx: #Context;
         push_context ctx {
             d: *Wayland_Display = wl_proxy_get_user_data(self);
 
@@ -361,7 +388,7 @@ data_device_listener :: wl_data_device_listener.{
     },
 
     drop = (data: *void, self: *wl_data_device) -> void #c_call {
-        ctx: Context;
+        ctx: #Context;
         push_context ctx {
             d: *Wayland_Display = wl_proxy_get_user_data(self);
 
@@ -412,7 +439,7 @@ data_device_listener :: wl_data_device_listener.{
     },
 
     selection = (data: *void, self: *wl_data_device, id: *wl_data_offer) -> void #c_call {
-        ctx: Context;
+        ctx: #Context;
         push_context ctx {
             d : *Wayland_Display = wl_proxy_get_user_data(self);
 
@@ -434,7 +461,7 @@ wl_clipboard_get_text :: (display: *Display) -> string {
 
 data_source_listener :: wl_data_source_listener.{
     send = (data: *void, self: *wl_data_source, mime_type: *u8, fd: s32) -> void #c_call {
-        ctx: Context;
+        ctx: #Context;
         push_context ctx {
             defer close(fd);
             d: *Wayland_Display = wl_proxy_get_user_data(self);
@@ -474,7 +501,7 @@ x_window_listener :: xdg_surface_listener.{
 
 x_toplevel_listener :: xdg_toplevel_listener.{
     configure = (data: *void, toplevel: *xdg_toplevel, width: s32, height: s32, states: *wl_array) -> void #c_call {
-        ctx: Context;
+        ctx: #Context;
         push_context ctx {
             w: *Wayland_Window = wl_proxy_get_user_data(toplevel);
 
@@ -501,7 +528,7 @@ x_toplevel_listener :: xdg_toplevel_listener.{
     },
 
     close = (data: *void, toplevel: *xdg_toplevel) -> void #c_call {
-        ctx: Context;
+        ctx: #Context;
         push_context ctx {
             w: *Wayland_Window = wl_proxy_get_user_data(toplevel);
             d := w.display;
@@ -538,7 +565,7 @@ wl_get_dpi_scaling_factor :: (window: *Window) -> float {
 
 fractional_scale_listener :: wp_fractional_scale_v1_listener.{
     preferred_scale = (data: *void, self: *wp_fractional_scale_v1, scale: u32) -> void #c_call {
-        ctx: Context;
+        ctx: #Context;
         push_context ctx {
             w: *Wayland_Window = data;
             w.fractional_scale = xx scale;

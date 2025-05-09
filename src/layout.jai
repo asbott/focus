@@ -69,7 +69,6 @@ cut_left :: (rect: Rect, amount: float, $margin := 0) -> (left: Rect,  remainder
     amount = floor(amount);
 
     remainder := rect;
-
     remainder.w -= amount;
     remainder.x += amount;
 
@@ -79,7 +78,7 @@ cut_left :: (rect: Rect, amount: float, $margin := 0) -> (left: Rect,  remainder
     #if margin > 0 {
         #assert margin % 2 == 0;
         half_margin := margin / 2;
-        remainder.x += margin;
+        remainder.x += half_margin;
         remainder.w -= half_margin;
         left.w      -= half_margin;
     }
@@ -91,7 +90,6 @@ cut_right :: (rect: Rect, amount: float, $margin := 0) -> (right: Rect, remainde
     amount = floor(amount);
 
     remainder := rect;
-
     remainder.w -= amount;
 
     right := rect;
@@ -101,40 +99,70 @@ cut_right :: (rect: Rect, amount: float, $margin := 0) -> (right: Rect, remainde
     #if margin > 0 {
         #assert margin % 2 == 0;
         half_margin := margin / 2;
-        remainder.x -= margin;
-        remainder.w += half_margin;
+        remainder.w -= half_margin;
+        right.x     += half_margin;
         right.w     -= half_margin;
     }
 
     return right, remainder;
 }
 
-cut_bottom :: (rect: Rect, amount: float) -> (bottom: Rect, remainder: Rect) {
+cut_bottom :: (rect: Rect, amount: float, $margin := 0) -> (bottom: Rect, remainder: Rect) {
     amount = floor(amount);
 
     remainder := rect;
-
     remainder.h -= amount;
     remainder.y += amount;
 
     bottom := rect;
     bottom.h = amount;
 
+    #if margin > 0 {
+        #assert margin % 2 == 0;
+        half_margin := margin / 2;
+        remainder.h -= half_margin;
+        remainder.y += half_margin;
+        bottom.h    -= half_margin;
+    }
+
     return bottom, remainder;
 }
 
-cut_top :: (rect: Rect, amount: float) -> (top: Rect, remainder: Rect) {
+cut_top :: (rect: Rect, amount: float, $margin := 0) -> (top: Rect, remainder: Rect) {
     amount = floor(amount);
 
     remainder := rect;
-
     remainder.h -= amount;
 
     top := rect;
     top.h = amount;
     top.y = remainder.y + remainder.h;
 
+    #if margin > 0 {
+        #assert margin % 2 == 0;
+        half_margin := margin / 2;
+        remainder.h -= half_margin;
+        top.h       -= half_margin;
+        top.y       += half_margin;
+    }
+
     return top, remainder;
+}
+
+top :: inline (using rect: Rect) -> float {
+    return y + h;
+}
+
+bottom :: inline (using rect: Rect) -> float {
+    return y;
+}
+
+left :: inline (using rect: Rect) -> float {
+    return x;
+}
+
+right :: inline (using rect: Rect) -> float {
+    return x + w;
 }
 
 bottom_left :: inline (using rect: Rect) -> Vector2 {

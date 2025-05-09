@@ -107,19 +107,48 @@ ACTIONS_COMMON :: string.[
     "decrease_font_size",
     "reset_font_size_to_default",
     "strip_trailing_whitespace",
+
+    "close_editor",
+    "close_other_editors_in_pane",
     "close_all_editors",
-    "close_current_editor",
-    "close_other_editors",
-    "close_other_editor",
-    "close_left_editor",
-    "close_right_editor",
+
+    "close_pane",
+    "close_left_pane",
+    "close_right_pane",
+    "close_top_pane",
+    "close_bottom_pane",
+    "close_other_panes",
+
     "close_dialog",
     "escape",
 
     "go_to_next_build_error",
-    "go_to_next_build_error_on_the_side",
+    "go_to_next_build_error_in_side_pane",
     "go_to_previous_build_error",
-    "go_to_previous_build_error_on_the_side",
+    "go_to_previous_build_error_in_side_pane",
+
+    "focus_next_ui_element",
+    "focus_previous_ui_element",
+
+    "open_entry",
+    "open_entry_in_side_pane",
+
+    "switch_to_left_pane",
+    "switch_to_right_pane",
+    "switch_to_top_pane",
+    "switch_to_bottom_pane",
+    "switch_to_side_pane",
+
+    "switch_to_pane_1",
+    "switch_to_pane_2",
+    "switch_to_pane_3",
+    "switch_to_pane_4",
+    "switch_to_pane_5",
+    "switch_to_pane_6",
+    "switch_to_pane_7",
+    "switch_to_pane_8",
+    "switch_to_pane_9",
+    "switch_to_pane_10",
 ];
 
 ACTIONS_EDITORS :: #run arrays_concat(ACTIONS_COMMON, string.[
@@ -151,6 +180,7 @@ ACTIONS_EDITORS :: #run arrays_concat(ACTIONS_COMMON, string.[
     "save",
     "save_as",
     "save_all",
+    "open_file_directory",
     "move_current_file",
     "delete_current_file",
     "toggle_comment",
@@ -170,50 +200,55 @@ ACTIONS_EDITORS :: #run arrays_concat(ACTIONS_COMMON, string.[
     "break_line",
     "new_line_below_without_breaking",
     "new_line_above_without_breaking",
-    "switch_to_left_editor",
-    "switch_to_right_editor",
-    "switch_to_other_editor",
-    "duplicate_editor",
-    "duplicate_editor_to_the_left",
-    "duplicate_editor_to_the_right",
-    "move_editor_to_the_left",
-    "move_editor_to_the_right",
+
     "create_new_file",
-    "create_new_file_on_the_side",
-    "move_to_previous_editor_history",
-    "move_to_next_editor_history",
-    "move_to_previous_buffer",
-    "move_to_next_buffer",
+    "create_new_file_in_side_pane",
+    "cursor_go_back",
+    "cursor_go_forward",
+    "go_to_previous_buffer",
+    "go_to_next_buffer",
     "toggle_line_wrap",
     "toggle_line_numbers",
     "copy_current_line_info",
+
     "indentation_detect_from_buffer_contents",
     "indentation_use_defaults_for_buffer",
     "indentation_convert_to_tabs_for_buffer",
     "indentation_convert_to_spaces_for_buffer",
     "reload_from_disk",
+
+    "split_left",
+    "split_right",
+    "split_top",
+    "split_bottom",
+
+    "duplicate_editor",
+    "duplicate_editor_left",
+    "duplicate_editor_right",
+    "duplicate_editor_top",
+    "duplicate_editor_bottom",
+
+    "move_editor_left",
+    "move_editor_right",
+    "move_editor_top",
+    "move_editor_bottom",
+
+    "reopen_closed_editor",
+
+    "rotate_panes_clockwise",
+    "rotate_panes_counterclockwise",
 ]);
 
 ACTIONS_OPEN_FILE_DIALOG :: #run arrays_concat(ACTIONS_COMMON, string.[
-    "open_entry_in_place",
-    "open_entry_on_the_side",
-    "open_entry_on_the_left",
-    "open_entry_on_the_right",
     "open_entry_in_explorer",
     "open_directory",
     "pop_directory",
 ]);
 
 ACTIONS_SEARCH_DIALOG :: #run arrays_concat(ACTIONS_COMMON, string.[
-    "open_entry_in_place",
-    "open_entry_on_the_side",
-    "open_entry_on_the_left",
-    "open_entry_on_the_right",
     "toggle_case_sensitive",
     "toggle_whole_word",
     "toggle_regex_search",
-    "go_to_next_input",
-    "go_to_previous_input",
 ]);
 
 
@@ -224,14 +259,7 @@ activate_hold_action :: (action: $Action_Type, event: Input.Event) {
 
     hold_action := Hold_Action.{ action_type = Action_Type, matched_mapping = matched_mapping };
 
-    // NOTE: array_add_if_unique didn't work because it couldn't find the operator == for Hold_Actions.
-    // I tried making it public but it didn't help.
-    // array_add_if_unique(*active_hold_actions, hold_action);
-
-    for active_hold_actions {
-        if it == hold_action return;  // already there
-    }
-    array_add(*active_hold_actions, hold_action);
+    array_add_if_unique(*active_hold_actions, hold_action);
 }
 
 is_hold_action :: inline (action: Action_Editors) -> bool {
@@ -243,10 +271,45 @@ is_hold_action :: inline (action: Action_Editors) -> bool {
            action == .scroll_viewport_right;
 }
 
+// This function just remembers that a linger action is now active, so that we can deactivate it on modifier key release.
+activate_lingering_action :: (lingering_action: Lingering_Action) {
+    for active_lingering_actions {
+        if it.action == lingering_action.action && it.modifier_keys.packed == lingering_action.modifier_keys.packed remove it;  // clear all existing similar actions
+    }
 
-active_hold_actions: [..] Hold_Action;
+    array_add(*active_lingering_actions, lingering_action);
+    lingering_action_activated_this_frame = true;
+}
 
-// We have to get store the matched mapping because one action may be matched
+deactivate_lingering_action :: (lingering_action: Lingering_Action) {
+    // Maybe we won't actually need this function if we don't want to do anything on deactivate.
+    // Will remove at some point if still unused
+    if #complete lingering_action.action == {
+        case .show_pane_editors;    // nothing to do
+        case .show_pane_numbers;    // TODO
+    }
+}
+
+clear_all_lingering_actions :: () {
+    for active_lingering_actions {
+        deactivate_lingering_action(it);
+        remove it;
+    }
+}
+
+should_show_pane_editors :: (pane: *Editor_Pane) -> bool {
+    for active_lingering_actions {
+        if it.action == .show_pane_editors && it.show_pane_editors.pane == pane return true;
+    }
+    return false;
+}
+
+
+active_hold_actions:      [..] Hold_Action;
+active_lingering_actions: [..] Lingering_Action;
+lingering_action_activated_this_frame := false;
+
+// We have to store the matched mapping because one action may be matched
 // by multiple key combos, so when a key is released, in order to deactivate the action
 // we need to check whether it actually belongs to the combo that activated the action!
 Hold_Action :: struct {
@@ -254,10 +317,32 @@ Hold_Action :: struct {
     matched_mapping: Key_Mapping;
 }
 
+// A lingering action is an action which is considered still active until all the modifier keys which
+// triggered it are released. Example: switching between buffers using Ctrl-Tab. While Ctrl is held
+// we want to still show the list of buffers, but once it's released we want to hide it.
+// Note that when Tab is released it doesn't deactivate the action, unlike the hold actions
+Lingering_Action :: struct {
+    action: Action_Type;
+    modifier_keys: Mods;
+
+    // Extra action data
+    union {
+        show_pane_editors: struct {
+            pane: *Editor_Pane;
+        };
+    }
+
+    Action_Type :: enum {
+        show_pane_editors;
+        show_pane_numbers;
+    }
+}
+
 
 #scope_file
 
-operator == :: (a: Hold_Action, b: Hold_Action) -> bool {
+operator== :: (a: Hold_Action, b: Hold_Action) -> bool {
     return memcmp(*a, *b, size_of(Hold_Action)) == 0;
 }
+#poke_name Basic operator==;
 
