@@ -498,9 +498,9 @@ rescan_for_wrapped_lines :: (editor: *Editor, buffer: Buffer) {
 retokenize :: (buffer: *Buffer) {
     lock(*buffer.content_lock);
     defer unlock(*buffer.content_lock);
-    
+
     log("Tokenizing %:", buffer.file.full_path);
-    
+
     assert(!buffer.dirty);
     buffer.needs_tokenizing = false;
 
@@ -541,16 +541,16 @@ retokenize :: (buffer: *Buffer) {
             if tokenize_func != null then tokenize_func(buffer, region.start, region.end - region.start);  // ignore subregions here
         }
     }
-    
+
     print_node :: (buffer: *Buffer, node: *Word_Node, buf: *u8, depth: s64) {
         if (node == null) return;
-    
+
         // If next[0] is non-null, we have a completed word
         if (node.next[0] != 0xffff) {
             word := string.{ depth, buf };
             print("%\n", word);
         }
-    
+
         // Go through each possible child index
         for i : 1..node.next.count-1 {
             if (node.next[i] != 0xffff) {
@@ -578,6 +578,7 @@ tokenize_for_indentation :: (buffer: *Buffer) -> [] Indentation_Token /* temp */
         case .Jai;          return tokenize_jai_for_indentation(buffer);
         case .CSharp;       return tokenize_csharp_for_indentation(buffer);
         case .C;            return tokenize_c_like_lang_for_indentation(buffer, get_next_c_token);
+        case .Lbc;            return tokenize_c_like_lang_for_indentation(buffer, get_next_c_token);
         case .Cpp;          return tokenize_c_like_lang_for_indentation(buffer, get_next_cpp_token);
         case .Css;          return tokenize_c_like_lang_for_indentation(buffer, get_next_css_token);
         case .D;            return tokenize_c_like_lang_for_indentation(buffer, get_next_d_token);
@@ -1539,7 +1540,7 @@ free_buffer :: (using buffer: *Buffer) {
 
     free_buffer_extra(extra);
     extra = null;
-    
+
     bucket_array_reset(*buffer.word_node_buffer);
     reset(*buffer.included_buffer_indices);
 }
@@ -1627,6 +1628,7 @@ get_tokenize_function :: (lang: Buffer.Lang) -> Tokenize_Function {
     if #complete lang == {
         case .Jai;                  return tokenize_jai;
         case .C;                    return tokenize_c;
+        case .Lbc;                    return tokenize_lbc;
         case .Cpp;                  return tokenize_cpp;
         case .Css;                  return tokenize_css;
         case .CSharp;               return tokenize_csharp;
@@ -1760,7 +1762,7 @@ Word_Node :: struct {
     // a-z*2 + 0-9 + 1 for null terminator + 1 for _
     // u24 index into word_node_buffer, u8 flags
     next: [80]u32 = #run -> [80]u32 { n: [80]u32; for * n  it.* = 0xffffffff; return n; };
-    
+
 }
 Word_Flags :: enum_flags u8 {
     undefined;
@@ -1808,7 +1810,7 @@ define_word :: (using buffer: *Buffer, w: string, f: Word_Flags) {
             w.* = .{};
             assert(w.next[0] == 0xffffffff);
         }
-        
+
         index_in_buffer := node.next[char_index] & 0x00ffffff;
         node = *buffer.word_node_buffer[index_in_buffer];
     }
@@ -1820,7 +1822,7 @@ define_word :: (using buffer: *Buffer, w: string, f: Word_Flags) {
         w.* = .{};
         assert(w.next[0] == 0xffffffff);
     }
-    
+
     // Add flags on null terminator
     node.next[0] |= (((cast(u32)f) << 24) & 0xff000000);
 }
@@ -1856,7 +1858,7 @@ get_word_definition :: (using buffer: *Buffer, word: string, buffer_index_stack:
         if array_find(buffer_index_stack.*, it)
             continue;
         array_add(buffer_index_stack, it,, temp);
-        
+
         other_defn := get_word_definition(*open_buffers[it], word, buffer_index_stack);
         if other_defn != .undefined
             return other_defn;
@@ -1980,6 +1982,7 @@ Buffer :: struct {
         Plain_Text :: 0;
         Jai;
         C;
+        Lbc;
         Cpp;
         Css;
         CSharp;

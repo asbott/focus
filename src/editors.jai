@@ -1311,6 +1311,7 @@ get_lang_from_path :: (full_path: string) -> Buffer.Lang {
         case "fxh";             lang = .Hlsl;
 
         case "c";               lang = .C;
+        case "lbc";               lang = .Lbc;
         case "h";               lang = .C;
         case "inl";             lang = .Cpp;
         case "cpp";             lang = .Cpp;
@@ -3415,6 +3416,7 @@ toggle_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false) {
     if #complete buffer.lang == {
         case .Jai;    #through;
         case .C;      #through;
+        case .Lbc;      #through;
         case .Cpp;    #through;
         case .CSharp; #through;
         case .D;      #through;
@@ -3634,6 +3636,7 @@ toggle_block_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false)
     if #complete buffer.lang == {
         case .Jai;    #through;
         case .C;      #through;
+        case .Lbc;      #through;
         case .Cpp;    #through;
         case .Css;    #through;
         case .CSharp; #through;

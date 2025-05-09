@@ -984,6 +984,7 @@ focus_allocator: Allocator;
 #load "langs/common.jai";
 #load "langs/jai.jai";
 #load "langs/c.jai";
+#load "langs/brevis.jai";
 #load "langs/cpp.jai";
 #load "langs/css.jai";
 #load "langs/csharp.jai";

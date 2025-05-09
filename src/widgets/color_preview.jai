@@ -298,6 +298,7 @@ get_language_sample_text :: (lang: Buffer.Lang) -> string {
     if #complete lang == {
         case .Jai;               return SAMPLE_Jai;
         case .C;                 return SAMPLE_C;
+        case .Lbc;                 return SAMPLE_C;
         case .Cpp;               return SAMPLE_Cpp;
         case .Css;               return SAMPLE_Css;
         case .CSharp;            return SAMPLE_CSharp;
