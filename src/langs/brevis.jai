@@ -425,12 +425,12 @@ KEYWORDS :: string.[
 ];
 
 TYPE_KEYWORDS :: string.[
-    // built-in types
-    "n8", "n16", "n32", "n64", "s8", "s16", "s32", "s64", "f16", "f32", "f64"
+    "n8", "n16", "n32", "n64", "s8", "s16", "s32", "s64", "f16", "f32", "f64",
+    "v2f16", "v3f16", "v4f16", "v2f32", "v3f32", "v4f32", "v2f64", "v3f64", "v4f64"
 ];
 
 VALUE_KEYWORDS :: string.[
-
+    "campō_adlocā", "dīrue", "adfirmā"
 ];
 
 MODIFIER_KEYWORDS :: string.[
@@ -438,7 +438,7 @@ MODIFIER_KEYWORDS :: string.[
 ];
 
 DIRECTIVES :: string.[
-    "invocā", "refer", "dīverte", "situla", "incorporā"
+    "invocā", "refer", "dīverte", "situla", "incorporā", "fīnis", "sī", "vulgā", "prōlātā", "dēsine", "lāminae"
 ];
 
 strip_macron :: (s: string) -> string {
