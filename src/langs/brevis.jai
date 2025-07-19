@@ -421,7 +421,7 @@ OPERATIONS :: string.[
 ];
 
 KEYWORDS :: string.[
-    "sī", "prōcēdūra", "prius", "ēnumerātiō", "bitōrum", "strūctūra", "commūnis", "commūnēs", "dum", "cēterum", "compīlāta", "trānsitōria", "nisī", "aliter"
+    "sī", "prōcēdūra", "prius", "ēnumerātiō", "bitōrum", "plexus", "commūnis", "commūnēs", "dum", "cētera", "compīlāta", "trānsitōria", "nisī", "aliter"
 ];
 
 TYPE_KEYWORDS :: string.[
