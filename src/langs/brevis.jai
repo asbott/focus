@@ -421,7 +421,16 @@ OPERATIONS :: string.[
 ];
 
 KEYWORDS :: string.[
-    "sī", "prōcēdūra", "prius", "ēnumerātiō", "bitōrum", "plexus", "commūnis", "commūnēs", "dum", "cētera", "compīlāta", "trānsitōria", "nisī", "aliter"
+    "sī", "aliter", "nisī", "prius", "plexus", "ēnumerātiō", 
+    "variābilis", "commūnis", "prōcēdūra", "compīlāta", "dum", 
+    "cētera", "trānsitōria", "quot_octētī", "quot_octētī_gradūs", 
+    "adfirmā", "supera", "prōc"
+];
+
+DIRECTIVES :: string.[
+    "fīnis", "incorporā", "incorporātus", 
+    "invocā", "vulgā", "lāminae", "dēsine", "prōlātā", "refer", 
+    "prōcēde", "dīverte", "situla"
 ];
 
 TYPE_KEYWORDS :: string.[
@@ -430,16 +439,13 @@ TYPE_KEYWORDS :: string.[
 ];
 
 VALUE_KEYWORDS :: string.[
-    "campō_adlocā", "dīrue", "adfirmā"
+    "campō_adlocā", "dīrue"
 ];
 
 MODIFIER_KEYWORDS :: string.[
 
 ];
 
-DIRECTIVES :: string.[
-    "invocā", "refer", "dīverte", "situla", "incorporā", "fīnis", "sī", "vulgā", "prōlātā", "dēsine", "lāminae"
-];
 
 strip_macron :: (s: string) -> string {
     ss := s;
