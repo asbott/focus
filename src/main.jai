@@ -6,10 +6,12 @@ main :: () {
 
     focus_allocator = context.allocator;  // to be used as a default allocator where we need it
 
-    cpu_info = get_cpu_info();
+    #if CPU == .X64 {
+        cpu_info = get_cpu_info();
 
-    // Meow hash relies on AES instruction support, so fall back to a standard hash function
-    if !check_feature(cpu_info.feature_leaves, x86_Feature_Flag.AES) then calculate_hash = fallback_hash;
+        // Meow hash relies on AES instruction support, so fall back to a standard hash function
+        if !check_feature(cpu_info.feature_leaves, x86_Feature_Flag.AES) then calculate_hash = fallback_hash;
+    }
 
     platform_setup();
 
@@ -60,7 +62,7 @@ main :: () {
         // - `focus.exe -project "Project Name"` or `focus.exe -project <path/to/project>` will load a project. No other arguments are allowed.
         project := args[2];
         success: bool;
-        if ends_with(project, ".focus-config") {
+        if ends_with_nocase(project, ".focus-config") {
             success = load_project_config(project);
         } else {
             config_path := tprint("%/%.focus-config", projects_dir, project);
@@ -169,7 +171,11 @@ main :: () {
     init_logger();
     defer deinit_logger();  // closes log file handles
 
-    if !check_feature(cpu_info.feature_leaves, x86_Feature_Flag.AES) then log_error("CPU doesn't support AES instructions. A slower hash function will be used.");
+    #if CPU == .X64 {
+        if !check_feature(cpu_info.feature_leaves, x86_Feature_Flag.AES) then log_error("CPU doesn't support AES instructions. A slower hash function will be used.");
+    }
+
+    repetition_tester();  // used for development. No-op in production
 
     // Requires the session to be created and the configs to be loaded
     start_workspace_scan();
@@ -247,6 +253,7 @@ main :: () {
         num_text_input_events_to_ignore := 0;
 
         for event : Input.events_this_frame {
+
             // General events
             if event.type == {
                 case .QUIT;
@@ -312,15 +319,15 @@ main :: () {
                 handled = maybe_execute_a_build_command(action);
             }
 
-            if handled && event.type == .KEYBOARD then num_text_input_events_to_ignore = event.text_input_count;
-            #if OS == .MACOS {
-                // @Hack:
-                // On macOS the shortcut Cmd-Q seems to be handled by the system.
-                // If the user presses Cmd-Q, we first get a normal .KEYBOARD and a .TEXT_INPUT events, then a .QUIT event.
-                // Since we're not handling the .KEYBOARD event, we're not ignoring the following .TEXT_INPUT, which
-                // sometimes results in the letter q being pressed.
-                // Unless there's a good simple way to avoid that we have to filter it out ourselves
-                if event.type == .KEYBOARD && event.key_code == #char "Q" && event.key_pressed && event.cmd_meta_pressed then num_text_input_events_to_ignore += 1;
+            // Ignore text input events if either we've handled a keyboard event for the same combo or the user holds Ctrl/Cmd/Meta
+            // (can't ignore when Alt/Opt is held because this is sometimes used to type characters)
+            if event.type == .KEYBOARD {
+                if handled {
+                    num_text_input_events_to_ignore = event.text_input_count;
+                } else {
+                    if event.modifier_flags.packed & Mods.{ctrl_pressed=true, cmd_meta_pressed=true}.packed then num_text_input_events_to_ignore = event.text_input_count;
+                    if event.modifier_flags.alt_pressed then num_text_input_events_to_ignore = 0;
+                }
             }
 
             handled = key_sequence_input_process_event(event, handled);
@@ -408,7 +415,8 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .switch_between_open_files;                        show_open_file_dialog(.open_editors);               return true;
 
         case .show_commands;                                    show_dialog(*commands_dialog);                      return true;
-        case .toggle_fullscreen;                                editor_toggle_fullscreen();                         return true;
+        case .toggle_fullscreen;                                action_toggle_fullscreen();                         return true;
+        case .toggle_status_bar;                                show_status_bar = !show_status_bar;                 return true;
 
         case .cursor_go_back;                                   action_cursor_go_back();                            return true;
         case .cursor_go_forward;                                action_cursor_go_forward();                         return true;
@@ -416,8 +424,8 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .go_to_previous_buffer;                            action_go_to_previous_buffer(event);                return true;
         case .go_to_next_buffer;                                action_go_to_next_buffer(event);                    return true;
 
-        case .build_panel_toggle;                               build_panel_toggle();                               return true;
-        case .build_panel_toggle_focus;                         build_panel_toggle_focus();                         return true;
+        case .toggle_build_panel;                               action_toggle_build_panel();                        return true;
+        case .toggle_build_panel_focus;                         action_toggle_build_panel_focus();                  return true;
 
         case .build_kill_running_command;                       build_kill_running_command();                       return true;
         case .build_clear_output;                               build_clear_output();                               return true;
@@ -444,9 +452,13 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .split_bottom;                                     split_active_pane(.bottom);                         return true;
 
         case .reopen_closed_editor;                             action_reopen_closed_editor();                      return true;
+        case .keep_editor;                                      action_keep_editor();                               return true;
 
         case .rotate_panes_clockwise;                           rotate_panes(editors.root, .clockwise);             return true;
         case .rotate_panes_counterclockwise;                    rotate_panes(editors.root, .counterclockwise);      return true;
+
+        case .center_pane_splitter;                             center_pane_splitter();                             return true;
+        case .center_all_pane_splitters;                        center_all_pane_splitters();                        return true;
 
         // TODO: search_in_buffer
         case .search_in_project;
@@ -483,6 +495,8 @@ init_fonts_and_dependent_things :: () {
     Simp.set_anti_aliasing(config.style.font_anti_aliasing);
     Simp.set_hinting(config.style.font_hinting);
 
+    Simp.set_show_tab_characters_in_selection(config.settings.show_tab_characters_in_selection);
+
     font_main_size = clamp(font_main_size, MIN_FONT_SIZE, MAX_FONT_SIZE);
     font_ui_size   = clamp(font_ui_size  , MIN_FONT_SIZE, MAX_FONT_SIZE);
 
@@ -513,6 +527,9 @@ init_fonts_and_dependent_things :: () {
 
     font_ui_bold = Simp.get_font_at_size(loaded_fonts.ui_bold.name, loaded_fonts.ui_bold.data, cast(int) (font_ui_size * dpi_scale));
     assert(font_ui_bold != null, "Couldn't init bold ui font\n");
+
+    font_ui_bold_italic = Simp.get_font_at_size(loaded_fonts.ui_bold_italic.name, loaded_fonts.ui_bold_italic.data, cast(int) (font_ui_size * dpi_scale));
+    assert(font_ui_bold != null, "Couldn't init bold italic ui font\n");
 
     font_ui_small = Simp.get_font_at_size(loaded_fonts.ui.name, loaded_fonts.ui.data, cast(int) (font_ui_small_size * dpi_scale));
     assert(font_ui_small != null, "Couldn't init small ui font\n");
@@ -655,7 +672,7 @@ update_mouse_state :: () {
     update_button(*mouse.x2,     .MOUSE_BUTTON_X2);
 }
 
-editor_toggle_fullscreen :: () {
+action_toggle_fullscreen :: () {
     fullscreen = !fullscreen;
     toggle_fullscreen(window, fullscreen, *fullscreen_state);  // platform-specific
 }
@@ -873,6 +890,7 @@ XMARK_ICON          :: #run to_string(*convert_utf32_to_utf8(0xf057));
 font_main:             *Simp.Dynamic_Font;
 font_ui:               *Simp.Dynamic_Font;
 font_ui_bold:          *Simp.Dynamic_Font;
+font_ui_bold_italic:   *Simp.Dynamic_Font;
 font_ui_big:           *Simp.Dynamic_Font;
 font_ui_small:         *Simp.Dynamic_Font;
 font_ui_very_small:    *Simp.Dynamic_Font;
@@ -892,9 +910,10 @@ DEFAULT_FONT_ICONS_SMALL_SIZE      :: 12;
 DEFAULT_FONT_ICONS_VERY_SMALL_SIZE :: 8;
 
 loaded_fonts: struct {
-    main:    Loaded_Font = FONT_MAIN;
-    ui:      Loaded_Font = FONT_UI;
-    ui_bold: Loaded_Font = FONT_UI_BOLD;
+    main:           Loaded_Font = FONT_MAIN;
+    ui:             Loaded_Font = FONT_UI;
+    ui_bold:        Loaded_Font = FONT_UI_BOLD;
+    ui_bold_italic: Loaded_Font = FONT_UI_BOLD_ITALIC;
 };
 
 // can be changed in the config file
@@ -936,6 +955,7 @@ Mods :: Input.Event.Modifier_Flags;
 
 project_dirs:  [..] Project_Dir;
 project_files: [..] string;  // individual files added to project
+unique_project_dirs: [..] string;
 
 active_global_widget: Active_Global_Widget = .editors;
 
@@ -985,23 +1005,23 @@ BUILTIN_THEMES :: #run -> [] Builtin_Theme {
 // A list of files drag-and-dropped into the editor (for the drawing code to use)
 just_dropped_files: [] string;
 
-cpu_info: Cpu_X86;
+#if CPU == .X64 {
+    cpu_info: Cpu_X86;
+}
 
 focus_allocator: Allocator;
 
 
-#load "array.jai";
 #load "actions.jai";
 #load "layout.jai";
 #load "editors.jai";
 #load "buffer.jai";
 #load "build_system.jai";
-#load "unicode.jai";
 #load "draw.jai";
 #load "pointer_image.jai";
-#load "utils.jai";
 #load "files.jai";
 #load "workspace.jai";
+#load "file_watcher.jai";
 #load "config.jai";
 #load "config_parser.jai";
 #load "config_migrator.jai";
@@ -1013,7 +1033,15 @@ focus_allocator: Allocator;
 #load "user_messages.jai";
 #load "deferred_actions.jai";
 #load "history.jai";
-#load "ring_buffer.jai";
+
+#load "utils/array.jai";
+#load "utils/aho_corasick.jai";
+#load "utils/char.jai";
+#load "utils/fifo_queue.jai";
+#load "utils/ring_buffer.jai";
+#load "utils/utils.jai";
+#load "utils/unicode.jai";
+#load "utils/rw_lock.jai";
 
 #load "widgets/generic_choice_dialog.jai";
 #load "widgets/generic_confirm_dialog.jai";
@@ -1040,6 +1068,7 @@ focus_allocator: Allocator;
 #load "langs/css.jai";
 #load "langs/csharp.jai";
 #load "langs/d.jai";
+#load "langs/dart.jai";
 #load "langs/focus_config.jai";
 #load "langs/glsl.jai";
 #load "langs/hlsl.jai";
@@ -1049,6 +1078,7 @@ focus_allocator: Allocator;
 #load "langs/json.jai";
 #load "langs/lua.jai";
 #load "langs/odin.jai";
+#load "langs/powershell.jai";
 #load "langs/python.jai";
 #load "langs/renpy.jai";
 #load "langs/shell.jai";
@@ -1062,6 +1092,9 @@ focus_allocator: Allocator;
 #load "langs/batch.jai";
 #load "langs/swift.jai";
 #load "langs/ini.jai";
+#load "langs/diff.jai";
+
+#load "repetition_tester.jai";
 
 #if OS == .WINDOWS {
     #load "platform/windows.jai";
@@ -1074,6 +1107,10 @@ focus_allocator: Allocator;
     #assert false, "Unsupported OS";
 }
 
+#if CPU == .X64 {
+    #import "Machine_X64";
+}
+
 using Basic :: #import "Basic"()(MEMORY_DEBUGGER = DEBUG, TEMP_ALLOCATOR_POISON_FREED_MEMORY = false);
 #import "Atomics";
 #import "Compiler";
@@ -1082,7 +1119,6 @@ using Basic :: #import "Basic"()(MEMORY_DEBUGGER = DEBUG, TEMP_ALLOCATOR_POISON_
 #import "File_Watcher";
 #import "Flat_Pool";
 #import "Math";
-#import "Machine_X64";
 #import "Process";
 #import "Reflection";
 #import "Sloppy_Math";
@@ -1134,10 +1170,11 @@ DOUBLE_CLICK_SPEED     :: 0.3;  // how many seconds between clicks to consider i
 DOUBLE_CLICK_TOLERANCE :: 2;    // how many pixels between the click locations are allowed
 
 // Embed default fonts
-FONT_MAIN    :: #run load_font("FiraCode-Retina.ttf");
-FONT_UI      :: #run load_font("OpenSans-Regular.ttf");
-FONT_UI_BOLD :: #run load_font("OpenSans-SemiBold.ttf");
-FONT_ICONS   :: #run load_font("font-awesome/Font Awesome 6 Free-Solid-900.otf");
+FONT_MAIN           :: #run load_font("FiraCode-Retina.ttf");
+FONT_UI             :: #run load_font("OpenSans-Regular.ttf");
+FONT_UI_BOLD        :: #run load_font("OpenSans-SemiBold.ttf");
+FONT_UI_BOLD_ITALIC :: #run load_font("OpenSans-SemiBoldItalic.ttf");
+FONT_ICONS          :: #run load_font("font-awesome/Font Awesome 6 Free-Solid-900.otf");
 
 #scope_file
 
@@ -1167,4 +1204,10 @@ DEBUG_MEMORY_LEAKS :: false;
     libc :: #system_library "libc";
 } else {
     focus_memcpy :: memcpy;
+}
+
+#if OS == .MACOS && CPU == .ARM64 {
+    // Freetype needs this when linking. I don't know...
+    #program_export
+    __chkstk_darwin :: () #c_call {}
 }

@@ -22,7 +22,7 @@ tokenize_d :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buf
 
         prev_token.* = token;
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+        highlight_token(buffer, token);
     }
 
     return .[];
@@ -45,11 +45,11 @@ get_next_token :: (using tokenizer: *Tokenizer) -> Token {
     // Look at the first char as if it's ASCII
     char := t.*;
 
-    if is_alpha(char) || char == #char "_" {
+    if ascii_is_alpha(char) || char == #char "_" {
         // Parse identifiers which start with an ASCII letter or _
         // We'll look at identifiers which start with UTF8 letters later when we've already checked for more probable possibilities
         parse_identifier(tokenizer, *token);
-    } else if is_digit(char) {
+    } else if ascii_is_digit(char) {
         parse_number_c_like(tokenizer, *token);
     } else if char == {
         case #char ":";  parse_colon                      (tokenizer, *token);
@@ -108,7 +108,7 @@ parse_identifier :: (using tokenizer: *Tokenizer, token: *Token) {
 
     // Maybe it's a keyword
     if identifier_str.count <= MAX_KEYWORD_LENGTH {
-        kw_token, ok := table_find(*KEYWORD_MAP, identifier_str);
+        ok, kw_token := table_find(*KEYWORD_MAP, identifier_str);
         if ok { token.type = kw_token.type; token.keyword = kw_token.keyword; return; }
     }
 }
@@ -155,7 +155,7 @@ parse_minus :: (using tokenizer: *Tokenizer, token: *Token) {
             token.operation = .minus_minus;
             t += 1;
         case;
-            if is_digit(t.*) parse_number_c_like(tokenizer, token);
+            if ascii_is_digit(t.*) parse_number_c_like(tokenizer, token);
     }
 }
 
@@ -434,8 +434,7 @@ parse_tilde :: (using tokenizer: *Tokenizer, token: *Token) {
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     union {
         keyword:        Keyword;

@@ -325,7 +325,7 @@ get_next_token :: (using tokenizer: *Tokenizer) -> Token {
     start_t = t;
 
     char := t.*;
-    if is_alpha(char) || char == #char "_" || char == #char "/" {
+    if ascii_is_alpha(char) || char == #char "_" || char == #char "/" {
         parse_identifier(tokenizer, *token);
     }
     else if char == #char "." {
@@ -343,7 +343,7 @@ get_next_token :: (using tokenizer: *Tokenizer) -> Token {
             }
         }
     }
-    else if is_digit(char) {
+    else if ascii_is_digit(char) {
         parse_number_c_like(tokenizer, *token);
     }
     else if char == {
@@ -453,7 +453,7 @@ parse_identifier :: (using tokenizer: *Tokenizer, token: *Token) {
     // Check if it's a keyword, and highlight accordingly if so
     if identifier_str.count > MAX_KEYWORD_LENGTH then return;
 
-    kw_token, ok := table_find(*KEYWORD_MAP, identifier_str);
+    ok, kw_token := table_find(*KEYWORD_MAP, identifier_str);
     if !ok then return;
 
     token.type = kw_token.type;
@@ -752,7 +752,7 @@ parse_bang :: (using tokenizer: *Tokenizer, token: *Token) {
             token.operation = .bang_caret;
             t += 1;
 
-        case; if is_digit(t.*) {
+        case; if ascii_is_digit(t.*) {
             token.operation = .bang_number;
             t += 1;
         }
@@ -828,7 +828,7 @@ parse_dollar :: (using tokenizer: *Tokenizer, token: *Token) {
                             token.operation = .dollar_bang;
                             t += 2;  // Eat the `!` and the `}`
                         case;
-                            if is_digit(t.*) {
+                            if ascii_is_digit(t.*) {
                                 token.operation = .dollar_number;
                                 t += 2;  // Eat the digit and the `}`
                             }
@@ -846,7 +846,7 @@ parse_dollar :: (using tokenizer: *Tokenizer, token: *Token) {
             }
 
         case;
-            if is_digit(t.*) {
+            if ascii_is_digit(t.*) {
                 token.operation = .dollar_number;
                 t += 1;
             }
@@ -889,7 +889,7 @@ read_identifier_string_with_extras :: (using tokenizer: *Tokenizer) -> string {
     identifier: string;
     identifier.data = t;
 
-    while t < max_t && (is_alnum(t.*) || t.* == #char "/" || t.* == #char "-" || t.* == #char ".") {
+    while t < max_t && (ascii_is_alnum(t.*) || t.* == #char "/" || t.* == #char "-" || t.* == #char ".") {
         t += 1;
     }
 
@@ -911,8 +911,7 @@ eat_white_space_no_newline :: (using tokenizer: *Tokenizer) {
 
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     // Additional info to distinguish between keywords/punctuation
     union {
@@ -1027,4 +1026,3 @@ MAX_KEYWORD_LENGTH :: #run -> s32 {
     for VALUE_KEYWORDS  { if it.count > result then result = it.count; }
     return xx result;
 }
-

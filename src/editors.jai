@@ -228,8 +228,11 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
         case .revert_select_word_or_create_another_cursor; revert_select_word_or_create_another_cursor(editor, buffer); keep_selection = true;
         case .move_selection_to_next_word;                 move_selection_to_next_word(editor, buffer);                 keep_selection = true;
 
-        case .toggle_line_wrap;                 action_toggle_line_wrap                 (editor);
-        case .toggle_line_numbers;              action_toggle_line_numbers              ();
+        case .toggle_line_wrap;                 action_toggle_line_wrap(editor);
+        case .toggle_line_numbers;              action_toggle_line_numbers();
+        case .toggle_pane_numbers;              action_toggle_pane_numbers();
+        case .toggle_indent_guides;             action_toggle_indent_guides();
+
         case .copy_current_line_info;           action_copy_current_line_info           (editor, buffer);
         case .center_viewport_on_cursor;        action_center_viewport_on_cursor        (editor, buffer);
         case .move_cursor_to_viewport_center;   action_move_cursor_to_viewport_center   (editor, buffer);
@@ -243,7 +246,10 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
         case .create_cursors_around;            create_cursors_around                   (editor, buffer);           keep_selection = true;
         case .strip_trailing_whitespace;        strip_trailing_whitespace               (buffer, editor.buffer_id); keep_selection = true;
 
-        case .choose_language;                  show_dialog                         (*language_dialog);
+        case .choose_language;                  show_dialog                             (*language_dialog);
+
+        case .convert_buffer_to_crlf;           action_convert_buffer_to_crlf           (buffer);
+        case .convert_buffer_to_lf;             action_convert_buffer_to_lf             (buffer);
 
         case .indentation_detect_from_buffer_contents;  indentation_detect_from_buffer_contents (buffer);
         case .indentation_use_defaults_for_buffer;      indentation_use_defaults_for_buffer     (buffer);
@@ -355,6 +361,7 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
         rescan_for_lines(buffer);
         if line_wrap_is_active(editor) then rescan_for_wrapped_lines(editor, buffer);
         if !is_empty(editor.search_bar.results) then search_and_update_results(editor, buffer, jump = false);
+        maybe_make_temporary_editor_permanent();
     }
     organise_cursors(editor);  // sort and maybe merge overlapping cursors
 
@@ -380,6 +387,8 @@ active_editor_type_char :: (char: u32) {
         editor.search_bar.scroll_to_selected = .snap;
         return;
     }
+
+    maybe_make_temporary_editor_permanent();
 
     if buffer.readonly return;
 
@@ -553,6 +562,18 @@ editors_open_file :: (path: string, placement: Editor_Placement = .in_place, lin
     return true;
 }
 
+editors_show_existing_file_or_open_in_place :: (path: string) -> success: bool {
+    buffer_id := _open_buffer_from_relative_path(path);
+    if buffer_id < 0 return false;
+
+    success := editors_show_existing_buffer(buffer_id);
+    if success return true;
+
+    editors_open_buffer(buffer_id, .in_place);
+
+    return true;
+}
+
 editors_open_file_in_pane :: (path: string, pane: *Editor_Pane, line := -1) -> success: bool {
     buffer_id := _open_buffer_from_relative_path(path);
     if buffer_id < 0 return false;
@@ -699,7 +720,14 @@ editors_open_buffer :: (buffer_id: s64, placement: Editor_Placement = .in_place)
     assert_leaf_pane(active_pane, "Can't open buffer in a non-leaf pane. This is a bug.");
 
     target_pane := get_adjacent_editor_pane(active_pane, placement);
-    if !target_pane then target_pane = split_active_pane(placement);
+    if !target_pane {
+        if active_pane == editors.root && !active_pane.editor_ids {
+            // Don't create new panes when we have an empty root
+            target_pane = active_pane;
+        } else {
+            target_pane = split_active_pane(placement);
+        }
+    }
     if !target_pane return;
 
     editors_open_buffer_in_pane(buffer_id, target_pane);
@@ -722,8 +750,7 @@ editors_open_buffer_in_pane :: (buffer_id: s64, target_pane: *Editor_Pane) -> ed
     for target_pane.editor_ids {
         editor := *open_editors[it];
         if editor.buffer_id == buffer_id {
-            _, target_pane.editor_index = array_find(target_pane.editor_ids, it);  // select the editor
-            assert(target_pane.editor_index >= 0);
+            target_pane.editor_index = it_index;  // select the editor
             return it;
         }
     }
@@ -747,9 +774,21 @@ editors_open_buffer_in_pane :: (buffer_id: s64, target_pane: *Editor_Pane) -> ed
     _find_existing_editors_for_buffer(buffer_id, editors.root, *unwanted_existing_editors);
 
     editor_id := find_or_create_editor(buffer_id, unwanted_existing_editors);
+
+    // We always want to keep the editor if opening in a different pane
+    should_use_temporary_editor := config.settings.enable_temporary_editors && target_pane == editors.active_pane;
+
+    // Open the editor in the target pane
+    if should_use_temporary_editor && target_pane.temporary_editor_index >= 0 && target_pane.temporary_editor_index < target_pane.editor_ids.count{
+        // Remove old temporary editor
+        old_temporary_editor_id := target_pane.editor_ids[target_pane.temporary_editor_index];
+        remove_editor_from_pane(target_pane, old_temporary_editor_id);
+        editor_do_post_close_cleanup(old_temporary_editor_id);
+    }
     new_index := target_pane.editor_index + 1;
     array_insert_at(*target_pane.editor_ids, editor_id, new_index);
     target_pane.editor_index = new_index;
+    if should_use_temporary_editor then target_pane.temporary_editor_index = new_index;
 
     // In case we've just opened a previously closed editor, remove it from the closed list
     array_ordered_remove_by_value(*recently_closed_editors, editor_id);
@@ -776,6 +815,19 @@ editors_get_next_pane_number :: () -> s64 {
 }
 
 editors_find_pane_by_number :: (number: s64) -> *Editor_Pane {
+    if editors.active_pane == editors.root {
+        if !editors.active_pane.editor_ids return editors.active_pane;  // don't split if the root pane is empty
+        if number == 1 {
+            new_pane, other_pane := split_active_pane(.left);
+            new_pane.number = 1;  // special case
+            other_pane.number = 2;
+            return new_pane;
+        } else if number == 2 {
+            new_pane := split_active_pane(.right);
+            return new_pane;
+        }
+    }
+
     _find_by_number :: (pane: *Editor_Pane, number: s64) -> *Editor_Pane {
         if !pane return null;
 
@@ -790,7 +842,7 @@ editors_find_pane_by_number :: (number: s64) -> *Editor_Pane {
         return null;
     }
 
-    return _find_by_number(editors.root, number);
+    return _find_by_number(editors.root, number);;
 }
 
 editors_find_pane_with_editor :: (editor_id: s64) -> *Editor_Pane, editor_index: int {
@@ -836,7 +888,7 @@ _find_pane_with_buffer_id :: (buffer_id: s64, current_pane: *Editor_Pane) -> *Ed
 
 #scope_export
 
-editors_show_existing_buffer :: (buffer_id: s64) {
+editors_show_existing_buffer :: (buffer_id: s64) -> found: bool {
     _find_by_buffer_id :: (pane: *Editor_Pane, buffer_id: s64) -> *Editor_Pane, editor_index: s64 = -1 {
         if !pane return null;
 
@@ -855,10 +907,12 @@ editors_show_existing_buffer :: (buffer_id: s64) {
     }
 
     pane, editor_index := _find_by_buffer_id(editors.root, buffer_id);
-    if !pane return;
+    if !pane return false;
 
     pane.editor_index = editor_index;
     activate_pane(pane);
+
+    return true;
 }
 
 get_visible_editor_id :: inline (pane: *Editor_Pane) -> s64 {
@@ -1102,12 +1156,17 @@ action_close_editor :: (event: *Input.Event) {
     if event then activate_show_pane_editors_action(event.modifier_flags, editors.active_pane);
 
     defer_action_close_editor(get_active_editor_id());
-    if is_unsaved(buffer) && num_editors_for_buffer_in_the_tree(editor.buffer_id) <= 1 then defer_action_save_buffers(.[editor.buffer_id]);
 }
 
-close_editor_by_id :: (editor_id: s64) {
+close_editor_by_id :: (editor_id: s64) -> *Editor_Pane {
     pane := get_pane_by_editor_id(editor_id);
-    if !pane return;
+    if !pane return null;
+
+    if config.settings.closing_last_editor_should_exit_program && pane.editor_ids.count == 1 && pane == editors.root {
+        // Do it before actually closing the editor to avoid flickering
+        defer_action_quit();
+        return null;
+    }
 
     active_editor_id := get_active_editor_id();
 
@@ -1119,6 +1178,12 @@ close_editor_by_id :: (editor_id: s64) {
         make_editor_active(new_editor_id);
     }
 
+    editor_do_post_close_cleanup(editor_id);
+
+    return pane;
+}
+
+editor_do_post_close_cleanup :: (editor_id: s64) {
     editor := *open_editors[editor_id];
     buffer_id := editor.buffer_id;
 
@@ -1134,17 +1199,16 @@ close_editor_by_id :: (editor_id: s64) {
 
 close_buffer :: (buffer_id: s64) {
     buffer := *open_buffers[buffer_id];
+
     if is_unsaved(buffer) {
-        if buffer.has_file {
-            reload_from_disk(buffer_id, force = true);
-        } else {
-            reset(*buffer.bytes);
-            buffer.deleted = true;
-            buffer.modified = false;
-        }
+        if buffer.has_file then reload_from_disk(buffer_id, force = true);
         reset_all_editors_for_buffer(buffer_id);
     }
+
+    buffer.modified = false;
     buffer.num_times_opened = 0;  // deprioritise it in the full file list
+    if !buffer.has_file then buffer.deleted = true;
+
     array_ordered_remove_by_value(*most_recent_buffers, buffer_id);
 }
 
@@ -1296,9 +1360,17 @@ _free_pane_tree :: (pane: *Editor_Pane) {
 remove_editor_from_pane :: (pane: *Editor_Pane, editor_id: s64) {
     found, index := array_find(pane.editor_ids, editor_id);
     if !found return;
+
     array_ordered_remove_by_index(*pane.editor_ids, index);
+
     if pane.editor_index >= index then pane.editor_index -= 1;
     if pane.editor_ids && pane.editor_index < 0 then pane.editor_index = 0;
+
+    if pane.temporary_editor_index == index {
+        pane.temporary_editor_index = -1;  // remove temporary editor
+    } else if pane.temporary_editor_index > index {
+        pane.temporary_editor_index -= 1;
+    }
 }
 
 action_close_pane :: (placement: Editor_Placement) {
@@ -1385,7 +1457,7 @@ open_search_bar :: (using editor: *Editor, buffer: Buffer, requested_mode: Searc
     if cursors.count == 1 {
         cursor := cursors[0];
         selected_text := get_selected_string(cursor, buffer);
-        if selected_text && offset_to_line(editor, buffer, cursor.pos) == offset_to_line(editor, buffer, cursor.sel) {
+        if selected_text && offset_to_real_line(buffer, cursor.pos) == offset_to_real_line(buffer, cursor.sel) {
             replace_text(*input, selected_text);
         }
     }
@@ -1633,6 +1705,7 @@ action_move_editor :: (placement: Editor_Placement) {
         if editor.buffer_id == buffer_id {
             target_pane.editor_ids[it_index] = editor_id;
             target_pane.editor_index = it_index;
+            if target_pane.temporary_editor_index == it_index then target_pane.temporary_editor_index = -1;
             replaced_existing = true;
             break;
         }
@@ -1640,6 +1713,7 @@ action_move_editor :: (placement: Editor_Placement) {
 
     if !replaced_existing {
         // Insert next to the visible editor
+        if target_pane.temporary_editor_index > target_pane.editor_index then target_pane.temporary_editor_index += 1;
         array_insert_at(*target_pane.editor_ids, editor_id, target_pane.editor_index + 1);
         target_pane.editor_index += 1;
     }
@@ -1683,6 +1757,10 @@ switch_to_pane_by_number :: (number: s64) {
     } else {
         add_user_error("Pane number % doesn't exist", number, dismiss_in_seconds = 3);
     }
+}
+
+action_keep_editor :: () {
+    maybe_make_temporary_editor_permanent();
 }
 
 action_reopen_closed_editor :: () {
@@ -1738,6 +1816,8 @@ action_duplicate_editor :: (placement: Editor_Placement) {
     if !target_pane then target_pane = split_active_pane(placement);
     if !target_pane return;
 
+    defer activate_pane(target_pane);
+
     duplicated_editor_id := editors_open_buffer_in_pane(open_editors[active_editor_id].buffer_id, target_pane);
     duplicated_editor := *open_editors[duplicated_editor_id];
     current_editor    := *open_editors[active_editor_id];  // get the pointer again because it could've become invalid
@@ -1753,7 +1833,7 @@ action_duplicate_editor :: (placement: Editor_Placement) {
     duplicated_editor.viewport.scroll_y = current_editor.viewport.scroll_y;
 }
 
-split_active_pane :: (placement: Editor_Placement) -> *Editor_Pane {
+split_active_pane :: (placement: Editor_Placement) -> *Editor_Pane, *Editor_Pane {
     active_pane := editors.active_pane;
     assert_leaf_pane(active_pane, "Cannot split a non-leaf pane. This is a bug");
 
@@ -1768,7 +1848,7 @@ split_active_pane :: (placement: Editor_Placement) -> *Editor_Pane {
         }
         if depth >= MAX_DEPTH {
             add_user_error("Can't split this pane any further", dismiss_in_seconds = 3);
-            return null;
+            return null, null;
         }
     }
 
@@ -1790,8 +1870,9 @@ split_active_pane :: (placement: Editor_Placement) -> *Editor_Pane {
         new_pane, other_pane = active_pane.child2, active_pane.child1;
     }
 
-    other_pane.editor_index = active_pane.editor_index;
     other_pane.editor_ids   = active_pane.editor_ids;
+    other_pane.editor_index = active_pane.editor_index;
+    other_pane.temporary_editor_index = active_pane.temporary_editor_index;
 
     other_pane.number  = active_pane.number;
     active_pane.number = -1;
@@ -1801,9 +1882,32 @@ split_active_pane :: (placement: Editor_Placement) -> *Editor_Pane {
     active_pane.editor_ids   = empty_ids;
     active_pane.editor_index = -1;
 
-    editors.active_pane = new_pane;
+    // We'll actually activate new_pane later. We're not activating it now because
+    // we want to detect that the active pane has changed further down
+    editors.active_pane = other_pane;
 
-    return new_pane;
+    return new_pane, other_pane;
+}
+
+maybe_make_temporary_editor_permanent :: () {
+    if active_global_widget != .editors return;
+
+    active_pane := editors.active_pane;
+    if active_pane.temporary_editor_index == active_pane.editor_index {
+        active_pane.temporary_editor_index = -1;
+    }
+}
+
+make_all_editors_permanent :: () {
+    // This is only used when the user disables temporary editors in the config - to make sure we don't keep a bad index anywhere
+    _make_permanent :: (pane: *Editor_Pane) {
+        if !pane return;
+        pane.temporary_editor_index = -1;
+        _make_permanent(pane.child1);
+        _make_permanent(pane.child2);
+    }
+
+    _make_permanent(editors.root);
 }
 
 rotate_panes :: (pane: *Editor_Pane, direction: enum { clockwise; counterclockwise; }) {
@@ -1831,6 +1935,32 @@ rotate_panes :: (pane: *Editor_Pane, direction: enum { clockwise; counterclockwi
     rotate_panes(pane.child2, direction);
 }
 
+center_pane_splitter :: () {
+    parent := editors.active_pane.parent;
+    if !parent return;
+
+    start_animation(*parent.splitter_anim, parent.splitter_pos, 0.5);
+    parent.saved_splitter_pos = 0.5;
+
+    editors.expanded_editor_id = -1;
+}
+
+center_all_pane_splitters :: () {
+    _center_splitter :: (using pane: *Editor_Pane) {
+        if !pane return;
+
+        start_animation(*splitter_anim, splitter_pos, 0.5);
+        saved_splitter_pos = 0.5;
+
+        _center_splitter(child1);
+        _center_splitter(child2);
+    }
+
+    _center_splitter(editors.root);
+
+    editors.expanded_editor_id = -1;
+}
+
 assert_leaf_pane :: (pane: *Editor_Pane, msg := "Expected a leaf pane but got something else. This is a bug.") {
     assert(pane.layout == .single, msg);
     assert(pane.left  == null, msg);
@@ -1846,6 +1976,8 @@ action_go_to_next_buffer :: (event: *Input.Event) {
     if editor_index < 0 || !editor_ids return;
     editor_index = (editor_index + 1) % editor_ids.count;
 
+    make_editor_active(editor_ids[editor_index]);
+
     if event then activate_show_pane_editors_action(event.modifier_flags, editors.active_pane);
 }
 
@@ -1858,6 +1990,8 @@ action_go_to_previous_buffer :: (event: *Input.Event) {
     if editor_index < 0 || !editor_ids return;
     editor_index -= 1;
     if editor_index < 0 then editor_index = editor_ids.count - 1;
+
+    make_editor_active(editor_ids[editor_index]);
 
     if event then activate_show_pane_editors_action(event.modifier_flags, editors.active_pane);
 }
@@ -1936,7 +2070,7 @@ find_all :: (using search_bar: *Search_Bar, needle: string, buffer: Buffer) {
             offset = inline bmh_find_index_from_left(buffer_str, needle, start_index = offset, skip_table, case_sensitive = false);
         }
         if offset < 0 break;
-        if whole_word && !match_whole_word(buffer_str, offset, needle.count) { offset += needle.count; continue; }
+        if whole_word && !is_whole_word(buffer_str, offset, needle.count) { offset += needle.count; continue; }
 
         // Valid result, add it to the list
         if selected_result < 0 && offset >= search_point_offset then selected_result = results.count;
@@ -2027,7 +2161,7 @@ gather_leaf_pane_rects :: () -> [] Leaf_Pane_Rect /* temp */ {
         if pane.layout == .horizontal {
             rect1, rect2 = cut_left(rect, rect.w * pane.splitter_pos + PANE_SPLITTER_WIDTH);
         } else {
-            rect2, rect1 = cut_bottom(rect, rect.h * pane.splitter_pos - PANE_SPLITTER_WIDTH);
+            rect1, rect2 = cut_top(rect, rect.h * pane.splitter_pos - PANE_SPLITTER_WIDTH);
         }
 
         _gather_rects(pane.child1, rect1, result);
@@ -2124,12 +2258,14 @@ get_lang_from_path :: (full_path: string) -> Buffer.Lang {
         case "jai";             lang = .Jai;
         case "cs";              lang = .CSharp;
         case "d";               lang = .D;
+        case "dart";            lang = .Dart;
         case "focus-config";    lang = .Focus_Config;
         case "focus-theme";     lang = .Focus_Theme;
         case "go";              lang = .Golang;
         case "lua";             lang = .Lua;
         case "java";            lang = .Java;
         case "odin";            lang = .Odin;
+        case "ps1";             lang = .Powershell;
         case "py";              lang = .Python;
         case "rpy";             lang = .RenPy;
         case "rs";              lang = .Rust;
@@ -2173,10 +2309,12 @@ get_lang_from_path :: (full_path: string) -> Buffer.Lang {
         case "hh";              lang = .Cpp;
         case "m";               lang = .Cpp;
         case "mm";              lang = .Cpp;
+        case "tpp";             lang = .Cpp;
 
         case "html";            lang = .Html;
         case "htm";             lang = .Html;
         case "xhtml";           lang = .Html;
+        case "vue";             lang = .Vue;
         case "css";             lang = .Css;
         case "scss";            lang = .Css;
 
@@ -2195,6 +2333,9 @@ get_lang_from_path :: (full_path: string) -> Buffer.Lang {
         case "zsh";             lang = .Shell;
 
         case "ini";             lang = .Ini;
+
+        case "diff";            lang = .Diff;
+        case "patch";           lang = .Diff;
 
         case;
             // Files named `.focus_config` are assumed to have no extension
@@ -2219,15 +2360,15 @@ select_line :: (cursor: *Cursor, buffer: Buffer) {
     cursor.pos = get_real_line_start_offset(buffer, end_line+1);
 }
 
-scan_through_similar_chars_on_the_left :: inline (using buffer: Buffer, offset: s32, char_type: Char_Type = .none, skip_one_space := true) -> offset: s32, moved_through: Char_Type {
+scan_through_similar_chars_on_the_left :: inline (using buffer: Buffer, offset: s32, char_type: Char_Type = .none, skip_one_space := true, stop_at_newline := true) -> offset: s32, moved_through: Char_Type, stopped_at_newline: bool {
     line_start_offset := line_starts[offset_to_real_line(buffer, offset)];
-    offset, moved_through := scan_through_similar_chars_on_the_left(to_view(buffer.bytes), line_start_offset, offset, char_type, skip_one_space);
-    return offset, moved_through;
+    offset, moved_through, stopped_at_newline := scan_through_similar_chars_on_the_left(to_view(buffer.bytes), line_start_offset, offset, char_type, skip_one_space, stop_at_newline);
+    return offset, moved_through, stopped_at_newline;
 }
 
-scan_through_similar_chars_on_the_right :: inline (buffer: Buffer, offset: s32, char_type: Char_Type = .none, skip_one_space := true) -> offset: s32, moved_through: Char_Type {
-    offset, moved_through := scan_through_similar_chars_on_the_right(to_view(buffer.bytes), offset, char_type, skip_one_space);
-    return offset, moved_through;
+scan_through_similar_chars_on_the_right :: inline (buffer: Buffer, offset: s32, char_type: Char_Type = .none, skip_one_space := true, stop_at_newline := true) -> offset: s32, moved_through: Char_Type, stopped_at_newline: bool {
+    offset, moved_through, stopped_at_newline := scan_through_similar_chars_on_the_right(to_view(buffer.bytes), offset, char_type, skip_one_space, stop_at_newline);
+    return offset, moved_through, stopped_at_newline;
 }
 
 cursors_start_blinking :: inline () {
@@ -2297,7 +2438,11 @@ make_editor_active :: (editor_id: s64) {
 
     if is_build_panel(editor_id) {
         build_panel_grab_focus();
+    } else if is_color_preview_panel(editor_id) {
+        // TODO:
+        // color_preview_grab_focus();
     } else {
+        activate_editors();
         pane, editor_index := editors_find_pane_with_editor(editor_id);
         if pane {
             // Make the pane active
@@ -2306,6 +2451,10 @@ make_editor_active :: (editor_id: s64) {
         } else {
             log_error("Attempting to make an editor active, but it's missing in the pane tree. This is probably a bug.");
             return;
+        }
+        // Maybe expand the newly activated editor
+        if editors.expanded_editor_id >= 0 && editors.expanded_editor_id != editor_id {
+            expand_active_editor();
         }
     }
 
@@ -2386,6 +2535,8 @@ new_edit_group :: (buffer: *Buffer, editor: *Editor) {
 action_save_all :: () {
     unsaved_buffer_ids := get_unsaved_buffer_ids();
     for < unsaved_buffer_ids  save(it);
+
+    maybe_make_temporary_editor_permanent();
 }
 
 #scope_file
@@ -2597,7 +2748,7 @@ align_cursors :: (using editor: *Editor, buffer: *Buffer) {
         if line_wrap_is_active(editor) then rescan_for_wrapped_lines(editor, buffer);
 
         // Keep selections aligned
-        if it.pos < it.sel Swap(*it.pos, *it.sel); // Shouldn't be necessary since it's already reverted in the merge step
+        if it.pos < it.sel swap(*it.pos, *it.sel); // Shouldn't be necessary since it's already reverted in the merge step
         it.pos += xx (str_before.count + str_after.count);
         it.sel = it.pos - largest_selection;
         offset_delta += str_before.count + str_after.count;
@@ -2793,6 +2944,8 @@ action_save :: () {
     editor_id := get_visible_editor_id(editors.active_pane);
     if editor_id < 0 return;
 
+    maybe_make_temporary_editor_permanent();
+
     save(open_editors[editor_id].buffer_id);
 }
 
@@ -2824,27 +2977,71 @@ action_reload_from_disk :: (buffer_id: s64) {
 
     add_success_message("File contents has been reloaded from\n%", buffer.file.full_path);
 
-    finder.need_to_refresh_results = true;
+    if !(buffer.internal || buffer.binary) then finder.need_to_refresh_results = true;
 }
 
 toggle_expand :: () {
     if build_panel_is_active() {
         build_panel_toggle_height();
     } else {
-        toggle_editor_expand(!editors.expanded);
+        toggle_editor_expand();
     }
 }
 
-toggle_editor_expand :: (expanded: bool) {
-    // !!!! TODO: rewrite
-    // if editors.layout != .Double return;
+toggle_editor_expand :: () {
+    if editors_get_layout() != .Multi return;
 
-    // editors.expanded = expanded;
-    // if editors.expanded {
-    //     editors_start_moving_splitter(ifx editors.active == editors.left then 0.9 else 0.1);
-    // } else {
-    //     editors_start_moving_splitter(0.5);  // back to center
-    // }
+    active_editor_id := get_active_editor_id();
+    if active_editor_id < 0 return;  // no active editor
+
+    if editors.expanded_editor_id == -1 {
+        // Expand
+        remember_all_splitter_positions();
+        expand_active_editor();
+    } else if editors.expanded_editor_id == active_editor_id {
+        editors.expanded_editor_id = -1;
+        restore_saved_splitter_positions();
+    }
+}
+
+remember_all_splitter_positions :: () {
+    _save_pos :: (using pane: *Editor_Pane) {
+        if !pane return;
+        saved_splitter_pos = splitter_anim.target;  // don't use splitter_pos because we might be animating it
+        _save_pos(child1);
+        _save_pos(child2);
+    }
+    _save_pos(editors.root);
+}
+
+restore_saved_splitter_positions :: () {
+    _restore_pos :: (using pane: *Editor_Pane) {
+        if !pane return;
+        if layout != .single {
+            start_animation(*splitter_anim, splitter_pos, saved_splitter_pos);
+        } else {
+            splitter_pos = 0.5;
+            saved_splitter_pos = splitter_pos;
+            splitter_anim.target = splitter_pos;
+        }
+        _restore_pos(child1);
+        _restore_pos(child2);
+    }
+    _restore_pos(editors.root);
+}
+
+expand_active_editor :: () {
+    editors.expanded_editor_id = get_active_editor_id();
+
+    pane   := editors.active_pane;
+    parent := pane.parent;
+    while parent != null {
+        assert(parent.layout != .single);
+        splitter_target := ifx parent.child1 == pane then 0.9 else 0.1;
+        start_animation(*parent.splitter_anim, parent.splitter_pos, splitter_target);
+        pane = parent;
+        parent = pane.parent;
+    }
 }
 
 action_scroll_viewport :: (action: Action_Editors, event: Input.Event, editor: Editor, direction: Smooth_Scroll_Direction, fast := false) {
@@ -3000,6 +3197,9 @@ move_cursor_left :: (cursor: *Cursor, editor: *Editor, using buffer: *Buffer, by
 
     if cursor.pos == 0  return;
 
+    moved_through : Char_Type = ---;
+    stopped_at_newline := false;
+
     if #complete by == {
         case .by_character;
             cursor.pos = prev_char_offset(bytes, cursor.pos);
@@ -3013,12 +3213,10 @@ move_cursor_left :: (cursor: *Cursor, editor: *Editor, using buffer: *Buffer, by
             cursor.pos = scan_through_similar_chars_on_the_left(buffer, cursor.pos, skip_one_space = is_single_cursor);
 
         case .through_word_throttled;
-            moved_through : Char_Type = ---;
-            cursor.pos, moved_through = scan_through_similar_chars_on_the_left(buffer, cursor.pos, skip_one_space = is_single_cursor);
-            if !(moved_through & (.word | .number))  cursor.pos = scan_through_similar_chars_on_the_left(buffer, cursor.pos, skip_one_space = false);
+            cursor.pos, moved_through, stopped_at_newline = scan_through_similar_chars_on_the_left(buffer, cursor.pos, skip_one_space = is_single_cursor);
+            if !(moved_through & (.word | .number) || stopped_at_newline)  cursor.pos = scan_through_similar_chars_on_the_left(buffer, cursor.pos, skip_one_space = false);
 
         case .through_word;
-            moved_through : Char_Type = ---;
             cursor.pos, moved_through = scan_through_similar_chars_on_the_left(buffer, cursor.pos, skip_one_space = false);
             while cursor.pos > 0 && moved_through != .word {
                 cursor.pos, moved_through = scan_through_similar_chars_on_the_left(buffer, cursor.pos, skip_one_space = false);
@@ -3047,6 +3245,9 @@ move_cursor_right :: (cursor: *Cursor, editor: *Editor, using buffer: *Buffer, b
 
     if cursor.pos >= bytes.count  return;
 
+    moved_through : Char_Type = ---;
+    stopped_at_newline := false;
+
     if #complete by == {
         case .by_character;
             cursor.pos = next_char_offset(bytes, cursor.pos);
@@ -3060,12 +3261,10 @@ move_cursor_right :: (cursor: *Cursor, editor: *Editor, using buffer: *Buffer, b
             cursor.pos = scan_through_similar_chars_on_the_right(buffer, cursor.pos, skip_one_space = is_single_cursor);
 
         case .through_word_throttled;
-            moved_through : Char_Type = ---;
-            cursor.pos, moved_through = scan_through_similar_chars_on_the_right(buffer, cursor.pos, skip_one_space = is_single_cursor);
-            if !(moved_through & (.word | .number))  cursor.pos = scan_through_similar_chars_on_the_right(buffer, cursor.pos, skip_one_space = false);
+            cursor.pos, moved_through, stopped_at_newline = scan_through_similar_chars_on_the_right(buffer, cursor.pos, skip_one_space = is_single_cursor);
+            if !(moved_through & (.word | .number) || stopped_at_newline)  cursor.pos = scan_through_similar_chars_on_the_right(buffer, cursor.pos, skip_one_space = false);
 
         case .through_word;
-            moved_through : Char_Type = ---;
             cursor.pos, moved_through = scan_through_similar_chars_on_the_right(buffer, cursor.pos, skip_one_space = false);
             while cursor.pos < bytes.count && moved_through != .word {
                 cursor.pos, moved_through = scan_through_similar_chars_on_the_right(buffer, cursor.pos, skip_one_space = false);
@@ -3722,7 +3921,7 @@ add_cursors_to_line_starts :: (using editor: *Editor, buffer: Buffer) {
     pos: s32;
 
     for * line_range : line_ranges {
-        line_num := offset_to_line(editor, buffer, line_range.start);
+        line_num := offset_to_real_line(buffer, line_range.start);
         while true {
             pos = buffer.line_starts[line_num];
             if pos >= line_range.end break;
@@ -4032,14 +4231,14 @@ change_case_of_selected_text :: (editor: *Editor, buffer: *Buffer, mode: enum { 
         if !has_selection(cursor)  continue;
 
         selection := get_selection(cursor);
-        s := get_selected_string(cursor, buffer);
+        current_text := get_selected_string(cursor, buffer);
 
         if mode == .cycle {
             found_lower := false;
             found_upper := false;
-            for 0 .. s.count - 1 {
-                if      is_lower(s[it])  found_lower = true;
-                else if is_upper(s[it])  found_upper = true;
+            for 0 .. current_text.count - 1 {
+                if      is_lower(current_text[it])  found_lower = true;
+                else if is_upper(current_text[it])  found_upper = true;
 
                 if found_lower && found_upper  break;
             }
@@ -4049,27 +4248,29 @@ change_case_of_selected_text :: (editor: *Editor, buffer: *Buffer, mode: enum { 
             else                           continue;
         }
 
+        auto_release_temp();
+        new_text := copy_temporary_string(current_text);
         if mode == {
             case .upper;
-                for 0 .. s.count - 1 {
-                    s[it] = to_upper(s[it]);
+                for 0 .. new_text.count - 1 {
+                    new_text[it] = to_upper(new_text[it]);
                 }
 
             case .lower;
-                for 0 .. s.count - 1 {
-                    s[it] = to_lower(s[it]);
+                for 0 .. new_text.count - 1 {
+                    new_text[it] = to_lower(new_text[it]);
                 }
 
             case .caps;
                 caps_next := true;
-                for 0 .. s.count - 1 {
-                    if is_alpha(s[it]) {
+                for 0 .. new_text.count - 1 {
+                    if ascii_is_alpha(new_text[it]) {
                         if caps_next {
                             caps_next = false;
-                            s[it] = to_upper(s[it]);
+                            new_text[it] = to_upper(new_text[it]);
                         }
                         else {
-                            s[it] = to_lower(s[it]);
+                            new_text[it] = to_lower(new_text[it]);
                         }
                     }
                     else {
@@ -4078,7 +4279,7 @@ change_case_of_selected_text :: (editor: *Editor, buffer: *Buffer, mode: enum { 
                 }
         }
 
-        replace_range(buffer, .{selection.start, selection.end}, s);
+        replace_range(buffer, .{selection.start, selection.end}, new_text);
     }
 }
 
@@ -4238,6 +4439,7 @@ toggle_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false) {
         case .Cpp;    #through;
         case .CSharp; #through;
         case .D;      #through;
+        case .Dart;   #through;
         case .Glsl;   #through;
         case .Hlsl;   #through;
         case .Golang; #through;
@@ -4254,6 +4456,7 @@ toggle_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false) {
         case .Lua;
             comment = "--";
 
+        case .Powershell;   #through;
         case .Python;       #through;
         case .RenPy;        #through;
         case .Shell;        #through;
@@ -4271,6 +4474,7 @@ toggle_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false) {
         case .Css;      #through;
         case .Xml;      #through;
         case .Html;     #through;
+        case .Vue;      #through;
         case .Uxntal;   #through;
         case .Markdown;
             assert(!is_fallback, "Infinite recursion");
@@ -4280,6 +4484,7 @@ toggle_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false) {
         // No support for comments at all
         case .Plain_Text;        #through;
         case .Todo;              #through;
+        case .Diff;              #through;
         case .Focus_Build_Panel;
             return;
     }
@@ -4463,6 +4668,7 @@ toggle_block_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false)
         case .Css;    #through;
         case .CSharp; #through;
         case .D;      #through;
+        case .Dart;   #through;
         case .Glsl;   #through;
         case .Hlsl;   #through;
         case .Golang; #through;
@@ -4481,6 +4687,7 @@ toggle_block_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false)
             comment_end   = "]]";
 
         case .Xml;  #through;
+        case .Vue;  #through;
         case .Html;
             comment_start = "<!--";
             comment_end   = "-->";
@@ -4493,6 +4700,10 @@ toggle_block_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false)
         case .Markdown;
             comment_start = "<!---";
             comment_end   = "--->";
+
+        case .Powershell;
+            comment_start = "<#";
+            comment_end   = "#>";
 
         // Muilti-line comments are not supported, fallback to multiple single-line comments
         case .Batch;        #through;
@@ -4510,6 +4721,7 @@ toggle_block_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false)
         // No support for comments at all
         case .Plain_Text;        #through;
         case .Todo;              #through;
+        case .Diff;              #through;
         case .Focus_Build_Panel;
             return;
     }
@@ -4653,6 +4865,25 @@ action_toggle_line_numbers :: () {
     config.settings.show_line_numbers = !config.settings.show_line_numbers;
 }
 
+action_toggle_pane_numbers :: () {
+    config.settings.show_pane_numbers = !config.settings.show_pane_numbers;
+}
+
+action_toggle_indent_guides :: () {
+    redraw_requested = true;
+
+    _, buffer := get_active_editor_and_buffer();
+    if buffer {
+        buffer_settings := get_settings(buffer);
+        if buffer_settings != *config.settings {
+            buffer_settings.draw_indent_guides = !buffer_settings.draw_indent_guides;
+            return;
+        }
+    }
+
+    config.settings.draw_indent_guides = !config.settings.draw_indent_guides;
+}
+
 action_copy_current_line_info :: (using editor: *Editor, buffer: Buffer) {
     file_path: string = copy_temporary_string(ifx buffer.has_file then buffer.file.full_path else "<in-memory-buffer>");
     path_overwrite_separators(file_path, PATH_SEPARATOR);  // match the system separator
@@ -4763,7 +4994,7 @@ Editor_State :: struct {
     active_pane: *Editor_Pane;
 
     last_active_editor_id: s64 = -1;
-    expanded := false;  // whether the active editor should be larger
+    expanded_editor_id: s64 = -1;
 
     Layout :: enum u8 {
         None    :: 0;
@@ -4776,6 +5007,7 @@ Editor_Pane :: struct {
     number := -1;  // for navigation - gets assigned at the time of splitting
 
     editor_index: s64 = -1;
+    temporary_editor_index: s64 = -1;
     editor_ids: [..] s64;
 
     editor_draw_info: struct {
@@ -4786,6 +5018,8 @@ Editor_Pane :: struct {
 
     layout: Layout = .single;
     splitter_pos: float = 0.5;
+    splitter_anim := #run Tween_Animation(float).{ start = 0.5, target = 0.5, duration = 0.1, func = .smoothstep };
+    saved_splitter_pos: float = 0.5;  // remembered when expanding, restored when unexpanding
 
     parent: *Editor_Pane;
     child1: *Editor_Pane;

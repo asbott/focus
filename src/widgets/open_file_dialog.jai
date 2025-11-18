@@ -28,7 +28,7 @@ open_file_dialog_handle_event :: (event: Input.Event) -> handled: bool {
 
             case .open_entry_in_explorer;   open_file_dialog_open_entry_in_explorer(entries.selected);                     return true;
 
-            case .open_directory;           handled := open_file_dialog_open_entry(entries.selected, .in_place, folder_only = true, slash_key_pressed = (event.key_code == #char "/"));
+            case .open_directory;           handled := open_file_dialog_open_entry(entries.selected, .in_place, folder_only = true);
                                             return handled;
 
             case .pop_directory;            if pop_directory() return true;
@@ -46,7 +46,6 @@ open_file_dialog_handle_event :: (event: Input.Event) -> handled: bool {
         return handled;
     } else if event.type == .TEXT_INPUT {
         char := event.utf32;
-        if open_file_dialog.mode == .navigate && (char == #char "/" || char == #char "\\") return true;  // these are special chars, don't handle
 
         text_input_type_char(*open_file_dialog.input, char);
         refresh_entries(clear_input = false);
@@ -126,26 +125,12 @@ open_file_dialog_get_result :: (action_id: Deferred_Action_Id) -> Open_File_Dial
     return open_file_dialog.result, open_file_dialog.selected_path;
 }
 
-open_file_dialog_open_entry :: (selected: s64, placement: Editor_Placement, folder_only := false, slash_key_pressed := false) -> handled: bool {
+open_file_dialog_open_entry :: (selected: s64, placement: Editor_Placement, folder_only := false) -> handled: bool {
     using open_file_dialog;
-
-    // If we are in search mode we want the "/" to show up as text in the search bar, instead of eating it
-    if mode == .search && slash_key_pressed return false;
 
     if selected >= entries.filtered.count   return true;
 
     entry := entries.filtered[selected];
-
-    if path_chunks.count == 0 && slash_key_pressed {
-        // We are selecting our first chunk and we just pushed the "/" key.
-        // In this special case, we will open "/" (the root dir) if it is in the list.
-        for entries.filtered {
-            if it.entry_name == "/" {
-                entry = it;
-                break;
-            }
-        }
-    }
 
     if entry.type == {
         case .save;
@@ -274,7 +259,7 @@ maybe_close_file_under_cursor :: () {
 
     for editor, editor_id : open_editors {
         if editor.buffer_id != buffer_id continue;
-        close_editor_by_id(editor_id);
+        defer_action_close_editor(editor_id);
     }
 
     refresh_entries(clear_input = false);
@@ -380,13 +365,24 @@ refresh_entries :: (clear_input := true) {
         }
         entry.name_highlights = name_highlights;
         entry.path_highlights = path_highlights;
-        // NOTE: there's space left in the sort key in case we need to add more parameters
-        score_part:      u64 = (cast,trunc(u64) score)                              << 22;
-        dir_id_part:     u64 = (cast,trunc(u64) (63 - buffer.file.project_dir_id))  << 16;
-        length_part:     u64 = (cast,trunc(u64) (400 - buffer_name.count))          <<  8;
-        times_open_part: u64 = (cast,trunc(u64) buffer.num_times_opened)            <<  0;
+
+        // Sort open editors on top
+        // @speed: could become slow if too many open buffers
+        _, most_recent_buffer_index := array_find(most_recent_buffers, buffer_id);
+        if most_recent_buffer_index >= 0 {
+            most_recent_buffer_index = most_recent_buffers.count - most_recent_buffer_index;
+        } else {
+            most_recent_buffer_index = 0;
+        }
+
+        score_part:      u64 = (cast,trunc(u64) score)                              << 32;
+        dir_id_part:     u64 = (cast,trunc(u64) (63 - buffer.file.project_dir_id))  << 24;
+        length_part:     u64 = (cast,trunc(u64) (400 - buffer_name.count))          << 16;
+        // TODO: put it after score but before other things
+        opened_part:     u64 = (cast,trunc(u64) (most_recent_buffer_index + 1))     <<  0;
+
         if !filter.full_string then length_part = 0;  // don't sort by length when no filtering is applied
-        entry.sort_key = dir_id_part | score_part | length_part | times_open_part;
+        entry.sort_key = dir_id_part | score_part | length_part | opened_part;
 
         if buffer.modified         then { entry.flags |= .MODIFIED;         entry.sort_key |= top_priority_bit; }
         if buffer.modified_on_disk then { entry.flags |= .MODIFIED_ON_DISK; entry.sort_key |= top_priority_bit; }
@@ -492,6 +488,7 @@ refresh_entries :: (clear_input := true) {
             }
 
         case .search;
+            // When there's text in the filter input, search in all workspace buffers
             for buffer, buffer_id : open_buffers {
                 maybe_add_a_buffer_entry(buffer, buffer_id);
             }
@@ -504,11 +501,12 @@ refresh_entries :: (clear_input := true) {
     }
 
     if (mode == .save || mode == .move) && !is_empty(input.text) && path_chunks {
+        folder_path := ifx get_current_folder_path() != "/" else "";
         entry_name: string;
         if mode == .save {
-            entry_name = sprint("Save as '%/%'", get_current_folder_path(), to_string(input.text));
+            entry_name = sprint("Save as '%/%'", folder_path, to_string(input.text));
         } else {
-            entry_name = sprint("Move to '%/%'", get_current_folder_path(), to_string(input.text));
+            entry_name = sprint("Move to '%/%'", folder_path, to_string(input.text));
         }
         array_add(*entries.filtered, Entry.{
             file = File_Info.{ full_path = "", name = "", path = "", icon = .save },
@@ -552,13 +550,9 @@ get_current_folder_path :: () -> string {
         path_chunks_trimmed := array_view(path_chunks, 1, path_chunks.count - 1);
         dir_path = sprint("%/%", root_dir, join(..path_chunks_trimmed, separator = "/"));
     } else {
-        if path_chunks[0] == "/" {
-            path_chunks_trimmed := array_view(path_chunks, 1, path_chunks.count - 1);
-            dir_path = sprint("/%", join(..path_chunks_trimmed, separator = "/"));
-        } else {
-            dir_path = join(..path_chunks, separator = "/");
-        }
+        dir_path = join(..path_chunks, separator = "/");
     }
+    while starts_with(dir_path, "//") advance(*dir_path);
     while dir_path != "/" && ends_with(dir_path, #char "/") dir_path.count -= 1;
 
     return dir_path;

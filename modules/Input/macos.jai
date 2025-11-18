@@ -2,6 +2,8 @@
 #import "Objective_C/AppKit";
 
 window_minimized := false; // @@ Hack.
+window_did_just_resize := false;
+window_is_being_moved := false;
 
 // this stuff is managed by the App_Delegate and Window_Delegate in Window_Creation.
 // It is generally safe for this to not be protected by a mutex as long as the user doesnt call
@@ -273,6 +275,11 @@ update_cocoa_window_events :: () {
 
         NSApplication.sendEvent(NSApp, nsevent);
 
+        if window_did_just_resize {
+            window_did_just_resize = false;
+            continue;
+        }
+
         type := NSEvent.type(nsevent);
         if type == {
             case NSEventTypeFlagsChanged;
@@ -398,23 +405,34 @@ update_cocoa_window_events :: () {
             case NSEventTypeLeftMouseDown; #through;
             case NSEventTypeRightMouseDown; #through;
             case NSEventTypeOtherMouseDown;
-                event: Event;
-                event.type = .KEYBOARD;
-                num := NSEvent.buttonNumber(nsevent);
+                window := NSEvent.window(nsevent);
+                view := NSWindow.contentView(window);
 
-                if num <= MFORWARD {
-                    if num == {
-                        case MLEFT;    event.key_code = Key_Code.MOUSE_BUTTON_LEFT;
-                        case MRIGHT;   event.key_code = Key_Code.MOUSE_BUTTON_RIGHT;
-                        case MMIDDLE;  event.key_code = Key_Code.MOUSE_BUTTON_MIDDLE;
-                        case MBACK;    event.key_code = Key_Code.MOUSE_BUTTON_X1;
-                        case MFORWARD; event.key_code = Key_Code.MOUSE_BUTTON_X2;
+                mouse_point   := NSEvent.locationInWindow(nsevent);
+                point_in_view := NSView.convertPoint(view, mouse_point, null);
+                view_bounds   := NSView.bounds(view);
+
+                if NSView.mouse_inRect(view, point_in_view, view_bounds) {
+                    event: Event;
+                    event.type = .KEYBOARD;
+                    num := NSEvent.buttonNumber(nsevent);
+
+                    if num <= MFORWARD {
+                        if num == {
+                            case MLEFT;    event.key_code = Key_Code.MOUSE_BUTTON_LEFT;
+                            case MRIGHT;   event.key_code = Key_Code.MOUSE_BUTTON_RIGHT;
+                            case MMIDDLE;  event.key_code = Key_Code.MOUSE_BUTTON_MIDDLE;
+                            case MBACK;    event.key_code = Key_Code.MOUSE_BUTTON_X1;
+                            case MFORWARD; event.key_code = Key_Code.MOUSE_BUTTON_X2;
+                        }
+
+                        input_button_states[event.key_code] = (START | DOWN);
+                        event.key_pressed = 1;
+
+                        array_add(*events_this_frame, event);
                     }
-
-                    input_button_states[event.key_code] = (START | DOWN);
-                    event.key_pressed = 1;
-
-                    array_add(*events_this_frame, event);
+                } else {
+                    window_is_being_moved = true;
                 }
 
             case NSEventTypeLeftMouseUp; #through;
@@ -444,6 +462,8 @@ update_cocoa_window_events :: () {
 
                     array_add(*events_this_frame, event);
                 }
+
+                window_is_being_moved = false;
 
             case NSEventTypeMouseMoved;
                 mouse_delta_x += cast(int) NSEvent.deltaX(nsevent);
@@ -656,6 +676,7 @@ create_window_delegate :: () -> *Window_Delegate {
         objc_add_instance_method(wd_class, Window_Delegate.windowWillClose,   "windowWillClose:");
         // objc_add_instance_method(wd_class, Window_Delegate.windowWillResize, "windowWillResize:toSize:");
         objc_add_instance_method(wd_class, Window_Delegate.windowDidResize, "windowDidResize:");
+        objc_add_instance_method(wd_class, Window_Delegate.windowWillStartLiveResize, "windowWillStartLiveResize:");
         objc_add_instance_method(wd_class, Window_Delegate.windowDidChangeScreen, "windowDidChangeScreen:");
         objc_add_instance_method(wd_class, Window_Delegate.windowDidMiniaturize, "windowDidMiniaturize:");
         objc_add_instance_method(wd_class, Window_Delegate.windowDidDeminiaturize, "windowDidDeminiaturize:");
@@ -804,11 +825,16 @@ Window_Delegate :: struct {
         }
     } @selector(windowDidResize:)
 
+    windowWillStartLiveResize :: (using self: *Window_Delegate, _sel: Selector, notification: *NSNotification) #c_call {
+        window_did_just_resize = true;
+    } @selector(windowWillStartLiveResize:)
+
     windowDidChangeScreen :: (self: *Window_Delegate, _sel: Selector, notification: *NSNotification) #c_call {
         // The backing scale factor might change when the window changes screen so we need to re-compute the width and height of the window. :MacHighResDisplays
         jai_context: #Context;
         push_context jai_context {
-            objc_msgSend(self, selector("windowDidResize:"), notification);
+            func :: #type (*void, Selector, *NSNotification) -> *void #c_call;
+            (cast(func) objc_msgSend)(self, selector("windowDidResize:"), notification);
         }
     } @selector(windowDidChangeScreen:)
 

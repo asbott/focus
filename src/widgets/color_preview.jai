@@ -270,6 +270,8 @@ color_preview_is_shown := true;
 color_preview_width:  float = 0.5;
 color_preview_height: float = 0.7;
 
+color_preview_scroll_y_anim := #run Tween_Animation(s32).{ duration = 0.1, func = .lerp };
+color_preview_scroll_y : s32;
 
 #scope_file
 
@@ -282,6 +284,8 @@ get_language_sample_text :: (lang: Buffer.Lang) -> string {
         case .Css;               return SAMPLE_Css;
         case .CSharp;            return SAMPLE_CSharp;
         case .D;                 return SAMPLE_D;
+        case .Dart;              return SAMPLE_Dart;
+        case .Diff;              return SAMPLE_Diff;
         case .Glsl;              return SAMPLE_Glsl;
         case .Hlsl;              return SAMPLE_Hlsl;
         case .Golang;            return SAMPLE_Golang;
@@ -290,6 +294,7 @@ get_language_sample_text :: (lang: Buffer.Lang) -> string {
         case .Json;              return SAMPLE_Json;
         case .Lua;               return SAMPLE_Lua;
         case .Odin;              return SAMPLE_Odin;
+        case .Powershell;        return SAMPLE_Powershell;
         case .Python;            return SAMPLE_Python;
         case .RenPy;             return SAMPLE_RenPy;
         case .Rust;              return SAMPLE_Rust;
@@ -304,6 +309,7 @@ get_language_sample_text :: (lang: Buffer.Lang) -> string {
         case .Swift;             return SAMPLE_Swift;
         case .Shell;             return SAMPLE_Shell;
         case .Ini;               return SAMPLE_Ini;
+        case .Vue;               return SAMPLE_Vue;
 
         case .Plain_Text;        #through;
         case .Focus_Config;      #through;
@@ -346,7 +352,6 @@ parse_config_and_get_offset_of_color_value :: (buffer: Buffer, color_name: strin
 
     return -1;
 }
-
 
 // The ids of the editor and buffer with the color section which triggered the widget
 target_editor_id := -1;

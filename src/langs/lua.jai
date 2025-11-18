@@ -16,7 +16,7 @@ tokenize_lua :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] B
         if token.type == .identifier && (prev.type == .keyword && prev.keyword == .kw_function) {
             memset(tokens.data + token.start, xx Token_Type.function, token.len);
         } else {
-            memset(tokens.data + token.start, xx token.type, token.len);
+            highlight_token(buffer, token);
         }
 
         tokenizer.last_token = token;
@@ -114,9 +114,9 @@ get_next_token :: (using tokenizer: *Lua_Tokenizer) -> Token {
     // UTF-8 characters elsewhere are a syntax error.
     char := t.*;
 
-    if is_alpha(char) || char == #char "_" {
+    if ascii_is_alpha(char) || char == #char "_" {
         parse_identifier(tokenizer, *token);
-    } else if is_digit(char) {
+    } else if ascii_is_digit(char) {
         parse_number(tokenizer, *token);
     } else if char == {
         case #char "'";  #through;
@@ -161,7 +161,7 @@ parse_identifier :: (using tokenizer: *Lua_Tokenizer, token: *Token) {
     ident := read_identifier_string(tokenizer);
 
     if ident.count <= MAX_KEYWORD_LENGTH {
-        kw_token, ok := table_find(*KEYWORD_MAP, ident);
+        ok, kw_token := table_find(*KEYWORD_MAP, ident);
         if ok {
             token.type    = kw_token.type;
             token.keyword = kw_token.keyword;
@@ -207,7 +207,7 @@ parse_number :: (using tokenizer: *Lua_Tokenizer, token: *Token) {
         else if is_hex_number && !is_hex(t.*) {
             break;
         }
-        else if !is_hex_number && !is_digit(t.*) {
+        else if !is_hex_number && !ascii_is_digit(t.*) {
             break;
         }
 
@@ -420,8 +420,7 @@ Lua_Tokenizer :: struct {
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     // Additional info to distinguish between keywords/punctuation
     union {

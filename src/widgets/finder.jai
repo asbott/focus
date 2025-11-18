@@ -85,6 +85,7 @@ finder_open :: () {
     input.cursor.sel = 0;
     input.cursor.pos = xx input.text.count;
 
+    active_input = .input;
     case_sensitive_toggled_manually = false;
 
     if need_to_refresh_results {
@@ -122,7 +123,7 @@ finder_open_from_editor :: () {
     if editor && editor.cursors.count == 1 {
         cursor := editor.cursors[0];
         selected_text := get_selected_string(cursor, buffer);
-        if selected_text && selected_text != to_string(finder.input.text) && offset_to_line(editor, buffer, cursor.pos) == offset_to_line(editor, buffer, cursor.sel) {
+        if selected_text && selected_text != to_string(finder.input.text) && offset_to_real_line(buffer, cursor.pos) == offset_to_real_line(buffer, cursor.sel) {
             replace_text(*finder.input, selected_text);
             reset_results();
             start_new_search();
@@ -316,7 +317,7 @@ start_new_search :: (force := false) {
     num_threads := thread_group.worker_info.count;
     assert(num_threads > 0);
 
-    buffers_per_thread := open_buffers.count / num_threads + 1;
+    buffers_per_task := open_buffers.count / num_threads + 1;
     buffer_start_index := 0;
 
     while buffer_start_index < open_buffers.count {
@@ -327,7 +328,7 @@ start_new_search :: (force := false) {
         task.exclude = copy_string(request.exclude);
         task.skip_table = array_copy(request.skip_table);
         task.buffer_start_index = cast(s32) buffer_start_index;
-        task.buffer_end_index   = cast(s32) min(buffer_start_index + buffers_per_thread - 1, open_buffers.count - 1);
+        task.buffer_end_index   = cast(s32) min(buffer_start_index + buffers_per_task - 1, open_buffers.count - 1);
         task.case_sensitive = request.case_sensitive;
         task.whole_word = request.whole_word;
         task.regex_search = request.regex_search;
@@ -335,7 +336,7 @@ start_new_search :: (force := false) {
         add_work(*thread_group, task, needle);
         request.num_tasks_left += 1;  // only modified in the main thread so no atomics needed
 
-        buffer_start_index += buffers_per_thread;
+        buffer_start_index += buffers_per_task;
     }
 
     if regex_search && regex_is_valid  reset_results();
@@ -369,6 +370,8 @@ search_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> Thr
     }
 
     for buffer_id : buffer_start_index .. buffer_end_index {
+        if task.request_id < finder.request.id  break;  // exit early if a newer request exists
+
         // Search in buffer
         buffer := *open_buffers[buffer_id];
         if (buffer.deleted && !buffer.modified) || buffer.binary || buffer.internal  continue;  // do not search
@@ -390,7 +393,7 @@ search_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> Thr
             find_all(task, buffer, buffer_id, buffer_sort_key);
         }
 
-        if num_results >= MAX_RESULTS_PER_WORKER { worker_limit_reached = true; break; }
+        if num_results >= MAX_RESULTS_PER_TASK { worker_limit_reached = true; break; }
     }
 
     return .CONTINUE;  // we want to reuse this thread for future searches
@@ -456,7 +459,7 @@ find_all_using_regex :: (using task: *Search_Task, regex: re.Regexp, buffer: Buf
         result.sort_key = buffer_sort_key | offset_part;
 
         num_results += 1;
-        if num_results >= MAX_RESULTS_PER_WORKER { worker_limit_reached = true; break; }
+        if num_results >= MAX_RESULTS_PER_TASK { worker_limit_reached = true; break; }
     }
 }
 
@@ -471,7 +474,7 @@ find_all :: (using task: *Search_Task, buffer: Buffer, buffer_id: s32, buffer_so
             offset = inline bmh_find_index_from_left(buffer_str, needle, start_index = offset, skip_table, case_sensitive = false);
         }
         if offset < 0 break;
-        if whole_word && !match_whole_word(buffer_str, offset, needle.count) { offset += needle.count; continue; }
+        if whole_word && !is_whole_word(buffer_str, offset, needle.count) { offset += needle.count; continue; }
 
         result := *results[num_results];
         result.buffer_id    = buffer_id;
@@ -482,7 +485,7 @@ find_all :: (using task: *Search_Task, buffer: Buffer, buffer_id: s32, buffer_so
         result.sort_key = buffer_sort_key | offset_part;
 
         num_results += 1;
-        if num_results >= MAX_RESULTS_PER_WORKER { worker_limit_reached = true; break; }
+        if num_results >= MAX_RESULTS_PER_TASK { worker_limit_reached = true; break; }
 
         offset += needle.count;
     }
@@ -620,10 +623,10 @@ Search_Task :: struct {
 
     // To be filled by the worker thread
     num_results: s64;
-    results: [MAX_RESULTS_PER_WORKER] Search_Result;
+    results: [MAX_RESULTS_PER_TASK] Search_Result;
     worker_limit_reached: bool;
 }
 
 thread_group: Thread_Group;
 
-MAX_RESULTS_PER_WORKER :: 1000;
+MAX_RESULTS_PER_TASK :: 1000;

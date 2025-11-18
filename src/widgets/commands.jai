@@ -159,6 +159,11 @@ base_commands := #run -> [] Command {
         cmd( "Close Top Pane",                    .close_top_pane,                   .Single ),
         cmd( "Close Bottom Pane",                 .close_bottom_pane,                .Single ),
 
+        cmd( "Change Case To Upper",              .change_case_to_upper,             .Single ),
+        cmd( "Change Case To Lower",              .change_case_to_lower,             .Single ),
+        cmd( "Change Case To Caps",               .change_case_to_caps,              .Single ),
+        cmd( "Change Case Cycle",                 .change_case_cycle,                .Single ),
+
         cmd( "Save",                              .save,                             .Single ),
         cmd( "Save As",                           .save_as,                          .Single ),
         cmd( "Save All",                          .save_all,                         .Single ),
@@ -230,6 +235,7 @@ base_commands := #run -> [] Command {
         cmd( "Duplicate Editor Bottom",           .duplicate_editor_bottom,          .Single ),
 
         cmd( "Reopen Closed Editor",              .reopen_closed_editor,             .None   ),
+        cmd( "Keep Editor",                       .keep_editor,                      .Single ),
 
         cmd( "Move Editor Left",                  .move_editor_left,                 .Single ),
         cmd( "Move Editor Right",                 .move_editor_right,                .Single ),
@@ -239,15 +245,21 @@ base_commands := #run -> [] Command {
         cmd( "Rotate Panes Clockwise",            .rotate_panes_clockwise,           .Multi  ),
         cmd( "Rotate Panes Counterclockwise",     .rotate_panes_counterclockwise,    .Multi  ),
 
+        cmd( "Center Pane Splitter",              .center_pane_splitter,             .Multi  ),
+        cmd( "Center All Pane Splitters",         .center_all_pane_splitters,        .Multi  ),
+
         cmd( "Toggle Block Comment",              .toggle_block_comment,             .Single ),
         cmd( "Toggle Line Wrap",                  .toggle_line_wrap,                 .Single ),
         cmd( "Toggle Line Numbers",               .toggle_line_numbers,              .Single ),
+        cmd( "Toggle Pane Numbers",               .toggle_pane_numbers,              .Single ),
+        cmd( "Toggle Indent Guides",              .toggle_indent_guides,             .Single ),
         cmd( "Toggle Fullscreen",                 .toggle_fullscreen,                .None   ),
+        cmd( "Toggle Status Bar",                 .toggle_status_bar,                .Single ),
 
         cmd( "Build: Kill Running Command",       .build_kill_running_command,       .None   ),
         cmd( "Build: Clear Build Output",         .build_clear_output,               .None   ),
-        cmd( "Build: Toggle Build Panel",         .build_panel_toggle,               .None   ),
-        cmd( "Build: Toggle Build Panel Focus",   .build_panel_toggle_focus,         .None   ),
+        cmd( "Build: Toggle Build Panel",         .toggle_build_panel,               .None   ),
+        cmd( "Build: Toggle Build Panel Focus",   .toggle_build_panel_focus,         .None   ),
 
         cmd( "Autoindent Region",                 .autoindent_region,                .Single ),
 
@@ -261,6 +273,9 @@ base_commands := #run -> [] Command {
         cmd( "Indentation: Use Defaults For File",              .indentation_use_defaults_for_buffer,      .Single),
         cmd( "Indentation: Convert File Indentation To Tabs",   .indentation_convert_to_tabs_for_buffer,   .Single),
         cmd( "Indentation: Convert File Indentation To Spaces", .indentation_convert_to_spaces_for_buffer, .Single),
+
+        cmd( "Line Endings: Convert Buffer To CRLF",            .convert_buffer_to_crlf,                   .Single),
+        cmd( "Line Endings: Convert Buffer To LF",              .convert_buffer_to_lf,                     .Single),
     ];
 
     linux_commands := Command.[

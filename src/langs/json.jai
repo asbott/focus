@@ -7,7 +7,7 @@ tokenize_json :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] 
         token := get_next_token(*tokenizer);
         if token.type == .eof break;
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+        highlight_token(buffer, token);
     }
 
     return .[];
@@ -30,9 +30,9 @@ get_next_token :: (using tokenizer: *Tokenizer) -> Token {
     // Look at the first char as if it's ASCII (if it isn't, this is just a text line)
     char := << t;
 
-    if is_alpha(char) {
+    if ascii_is_alpha(char) {
         parse_value_keyword(tokenizer, *token);
-    } else if is_digit(char) {
+    } else if ascii_is_digit(char) {
         parse_number(tokenizer, *token);
     } else if char == {
         case #char ":";  parse_colon                       (tokenizer, *token);
@@ -61,7 +61,7 @@ parse_value_keyword :: (using tokenizer: *Tokenizer, token: *Token) {
     value_str := read_utf8_identifier_string(tokenizer);
 
     if value_str.count <= MAX_KEYWORD_LENGTH {
-        kw_token, ok := table_find(*KEYWORD_MAP, value_str);
+        ok, kw_token := table_find(*KEYWORD_MAP, value_str);
         if ok { token.type = kw_token.type; token.keyword = kw_token.keyword; return; }
     }
 }
@@ -74,10 +74,10 @@ parse_number :: (using tokenizer: *Tokenizer, token: *Token) {
     t += 1;
     if t >= max_t return;
 
-    if is_digit(t.*) || t.* == #char "." {
+    if ascii_is_digit(t.*) || t.* == #char "." {
         // Decimal
         seen_decimal_point := false;
-        while t < max_t && (is_digit(t.*) || t.* == #char ".") {
+        while t < max_t && (ascii_is_digit(t.*) || t.* == #char ".") {
             if t.* == #char "." {
                 if seen_decimal_point break;
                 seen_decimal_point = true;
@@ -96,7 +96,7 @@ parse_number :: (using tokenizer: *Tokenizer, token: *Token) {
               if t >= max_t return;
             }
 
-            while t < max_t && is_digit(t.*) {
+            while t < max_t && ascii_is_digit(t.*) {
                 t += 1;
             }
             if t >= max_t return;
@@ -124,7 +124,7 @@ parse_minus :: (using tokenizer: *Tokenizer, token: *Token) {
     t += 1;
     if t >= max_t return;
 
-    if is_digit(<< t) parse_number(tokenizer, token);
+    if ascii_is_digit(<< t) parse_number(tokenizer, token);
 }
 
 parse_string :: (using tokenizer: *Tokenizer, token: *Token) {
@@ -169,8 +169,7 @@ parse_slash_or_comment :: (using tokenizer: *Tokenizer, token: *Token) {
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     union {
         keyword:            Keyword;
@@ -228,4 +227,3 @@ MAX_KEYWORD_LENGTH :: #run -> s32 {
     for VALUE_KEYWORDS { if it.count > result then result = it.count; }
     return xx result;
 }
-

@@ -22,7 +22,7 @@ tokenize_java :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] 
 
         prev_token.* = token;
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+        highlight_token(buffer, token);
     }
 
     return .[];
@@ -45,11 +45,11 @@ get_next_token :: (using tokenizer: *Tokenizer) -> Token {
     // Look at the first char as if it's ASCII
     char := t.*;
 
-    if is_alpha(char) || char == #char "_" {
+    if ascii_is_alpha(char) || char == #char "_" {
         // Parse identifiers which start with an ASCII letter or _
         // We'll look at identifiers which start with UTF8 letters later when we've already checked for more probable possibilities
         parse_identifier(tokenizer, *token);
-    } else if is_digit(char) {
+    } else if ascii_is_digit(char) {
         parse_number_c_like(tokenizer, *token);
     } else if char == {
         case #char "=";  parse_equal                 (tokenizer, *token);
@@ -108,7 +108,7 @@ parse_identifier :: (using tokenizer: *Tokenizer, token: *Token) {
         possible_match := (remaining == tok_non_sealed.count);
         if remaining > tok_non_sealed.count {
             next_ch := (t + tok_non_sealed.count).*;
-            possible_match = possible_match || !(is_alpha(next_ch) || next_ch == #char "_");
+            possible_match = possible_match || !(ascii_is_alpha(next_ch) || next_ch == #char "_");
         }
         if possible_match {
             match_str := string.{data = t, count = tok_non_sealed.count};
@@ -126,7 +126,7 @@ parse_identifier :: (using tokenizer: *Tokenizer, token: *Token) {
 
     // Maybe it's a keyword
     if identifier_str.count <= MAX_KEYWORD_LENGTH {
-        kw_token, ok := table_find(*KEYWORD_MAP, identifier_str);
+        ok, kw_token := table_find(*KEYWORD_MAP, identifier_str);
         if ok { token.type = kw_token.type; token.keyword = kw_token.keyword; return; }
     }
 }
@@ -161,7 +161,7 @@ parse_minus :: (using tokenizer: *Tokenizer, token: *Token) {
             token.operation = .minus_minus;
             t += 1;
         case;
-            if is_digit(t.*) parse_number_c_like(tokenizer, token);
+            if ascii_is_digit(t.*) parse_number_c_like(tokenizer, token);
     }
 }
 
@@ -267,17 +267,27 @@ parse_bang :: (using tokenizer: *Tokenizer, token: *Token) {
 parse_string_literal :: (using tokenizer: *Tokenizer, token: *Token) {
     token.type = .string_literal;
 
-    escape_seen := false;
+    if t + 2 <= max_t && (t+1).* == #char "\"" && (t+2).* == #char "\"" {
 
-    t += 1;
-    while t < max_t && t.* != #char "\n" {
-        if <<t == #char "\"" && !escape_seen break;
-        escape_seen = !escape_seen && <<t == #char "\\";
+        multiline_string_end :: "\"\"\"";
+
+        end := find_index_from_left(buf, multiline_string_end, start_index = t - buf.data + 1);
+        if end < 0 { t = max_t; return; }
+
+        t = buf.data + end + multiline_string_end.count;
+    } else {
+        escape_seen := false;
+
+        t += 1;
+        while t < max_t && t.* != #char "\n" {
+            if <<t == #char "\"" && !escape_seen break;
+            escape_seen = !escape_seen && <<t == #char "\\";
+            t += 1;
+        }
+        if t >= max_t return;
+
         t += 1;
     }
-    if t >= max_t return;
-
-    t += 1;
 }
 
 parse_char_literal :: (using tokenizer: *Tokenizer, token: *Token) {
@@ -387,7 +397,7 @@ parse_at :: (using tokenizer: *Tokenizer, token: *Token) {
     token.type = .note;
 
     t += 1;
-    while t < max_t && is_alnum(<< t) t += 1;
+    while t < max_t && ascii_is_alnum(<< t) t += 1;
     if t >= max_t return;
 }
 
@@ -406,8 +416,7 @@ parse_caret :: (using tokenizer: *Tokenizer, token: *Token) {
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     union {
         keyword:        Keyword;
@@ -533,4 +542,3 @@ MAX_KEYWORD_LENGTH :: #run -> s32 {
     for MODIFIER_KEYWORDS { if it.count > result then result = it.count; }
     return xx result;
 }
-

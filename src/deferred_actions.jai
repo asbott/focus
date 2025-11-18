@@ -14,6 +14,7 @@ defer_action_switch_to_project :: (path: string) {
     clear_action_queue();
     push_action(.reload_workspace, .{ reload_workspace = .{ automatic = false } });
     push_action(.load_project_config, .{ load_project_config = .{ path = copy_string(path) } });
+    push_action(.abort_workspace_scanning);
     push_action(.wait_for_killed_command_to_stop);
     push_action(.kill_running_command);
     defer_action_save_all_buffers();
@@ -31,9 +32,16 @@ defer_action_close_project :: () {
     clear_action_queue();
     push_action(.reload_workspace, .{ reload_workspace = .{ automatic = false } });
     push_action(.close_project);
+    push_action(.abort_workspace_scanning);
     push_action(.wait_for_killed_command_to_stop);
     push_action(.kill_running_command);
     defer_action_save_all_buffers();
+}
+
+defer_action_refresh_config_or_theme :: (path: string) {
+    clear_action_queue();
+    push_action(.refresh_config_or_theme, .{ refresh_config_or_theme = .{ path = copy_string(path) } });
+    push_action(.wait_for_workspace_scanning_to_finish);
 }
 
 defer_action_quit :: () {
@@ -78,6 +86,8 @@ defer_action_close_pane :: (pane: *Editor_Pane) {
 
 defer_action_close_editor :: (editor_id: s64) {
     push_action(.close_editor, .{ close_editor = .{ editor_id = editor_id } });
+    editor, buffer := get_editor_and_buffer(editor_id);
+    if is_unsaved(buffer) && num_editors_for_buffer_in_the_tree(editor.buffer_id) <= 1 then defer_action_save_buffers(.[editor.buffer_id]);
 }
 
 defer_action_close_editors_for_pane :: (pane: *Editor_Pane, except: s64 = -1, notify := false) {
@@ -129,8 +139,10 @@ execute_top_action :: () -> Action_Result {
         case .kill_running_command;                     return execute_kill_running_command(action);
         case .load_project_config;                      return execute_load_project_config(action);
         case .close_project;                            return execute_close_project(action);
+        case .refresh_config_or_theme;                  return execute_refresh_config_or_theme(action);
         case .reload_workspace;                         return execute_reload_workspace(action);
         case .build_command;                            return execute_build_command(action);
+        case .abort_workspace_scanning;                 return execute_abort_workspace_scanning(action);
         case .wait_for_workspace_scanning_to_finish;    return execute_wait_for_scanning(action);
         case .wait_for_killed_command_to_stop;          return execute_wait_for_killed_command_to_stop(action);
         case .close_editor;                             return execute_close_editor(action);
@@ -149,6 +161,10 @@ remove_top_action :: () {
             using action.details.load_project_config;
             if path { free(path); path = ""; }
 
+        case .refresh_config_or_theme;
+            using action.details.refresh_config_or_theme;
+            if path { free(path); path = ""; }
+
         case .confirm_overwrite;
             using action.details.confirm_overwrite;
             if file_path { free(file_path); file_path = ""; }
@@ -165,6 +181,7 @@ remove_top_action :: () {
         case .reload_workspace;
         case .close_project;
         case .build_command;
+        case .abort_workspace_scanning;
         case .wait_for_workspace_scanning_to_finish;
         case .wait_for_killed_command_to_stop;
         case .close_editor;
@@ -188,16 +205,17 @@ Deferred_Action :: struct {
     using details: Details;
 
     Details :: union {
-        save_as:                struct { buffer_id: s64; is_move: bool; }
-        save_buffers:           struct { buffer_ids: [] s64; }
-        confirm_overwrite:      struct { buffer_id: s64; is_move: bool; file_path: string; }
-        delete:                 struct { buffer_id: s64; }
-        load_project_config:    struct { path: string; }
-        reload_workspace:       struct { automatic: bool; }
-        build_command:          struct { command_id: s64; }
-        close_editor:           struct { editor_id: s64; }
-        close_editors_for_pane: struct { pane: *Editor_Pane; except: s64; notify: bool; }
-        close_pane:             struct { pane: *Editor_Pane; }
+        save_as:                    struct { buffer_id: s64; is_move: bool; }
+        save_buffers:               struct { buffer_ids: [] s64; }
+        confirm_overwrite:          struct { buffer_id: s64; is_move: bool; file_path: string; }
+        delete:                     struct { buffer_id: s64; }
+        load_project_config:        struct { path: string; }
+        reload_workspace:           struct { automatic: bool; }
+        refresh_config_or_theme:    struct { path: string; }
+        build_command:              struct { command_id: s64; }
+        close_editor:               struct { editor_id: s64; }
+        close_editors_for_pane:     struct { pane: *Editor_Pane; except: s64; notify: bool; }
+        close_pane:                 struct { pane: *Editor_Pane; }
     }
 
     Kind :: enum {
@@ -211,6 +229,8 @@ Deferred_Action :: struct {
         load_project_config;
         close_project;
         reload_workspace;
+        refresh_config_or_theme;
+        abort_workspace_scanning;
         wait_for_workspace_scanning_to_finish;
         wait_for_killed_command_to_stop;
         close_editor;
@@ -278,6 +298,14 @@ execute_save_as :: (action: Deferred_Action) -> Action_Result {
             push_action(.confirm_overwrite, .{ confirm_overwrite = .{ buffer_id = buffer_id, is_move = is_move, file_path = copy_string(file_path) } });
             return .NEXT;
         } else {
+            found, directory, file := split_from_right(file_path, #char "/");
+            if found && directory.count > 0 {
+                success := make_directory_if_it_does_not_exist(directory, recursive=true);
+                if !success {
+                    add_user_error("Unable to make directory '%'", directory);
+                    return .CANCEL;
+                }
+            }
             save_buffer_to_file(buffer, buffer_id, file_path);
             if buffer.error_when_saving {
                 add_user_error("Unable to save file into '%'", file_path);
@@ -291,7 +319,7 @@ execute_save_as :: (action: Deferred_Action) -> Action_Result {
         }
     }
 
-    if OS == .WINDOWS && config.settings.prefer_system_file_dialogs {
+    if (OS == .WINDOWS || OS == .MACOS) && config.settings.prefer_system_file_dialogs {
         file_path, success := platform_get_save_file_name(get_buffer_name(buffer));
         if !success return .CANCEL;  // the user did not select a file
         return _save_to_file_path(buffer, buffer_id, file_path, is_move);
@@ -318,7 +346,10 @@ execute_delete :: (action: Deferred_Action) -> Action_Result {
 
     _close_editors_for_buffer :: (buffer_id: s64) {
         for editor, editor_id : open_editors {
-            if editor.buffer_id == buffer_id then close_editor_by_id(editor_id);
+            if editor.buffer_id == buffer_id {
+                pane := close_editor_by_id(editor_id);
+                if config.settings.closing_last_editor_in_pane_should_close_pane && pane && !pane.editor_ids then close_pane(pane);
+            }
         }
     }
 
@@ -426,6 +457,16 @@ execute_close_project :: (action: Deferred_Action) -> Action_Result {
     return .DONE;
 }
 
+execute_refresh_config_or_theme :: (action: Deferred_Action) -> Action_Result {
+    path := action.details.refresh_config_or_theme.path;
+    if is_our_config_file(path) {
+        refresh_config(path);
+    } else if is_current_theme(path) {
+        refresh_current_theme();
+    }
+    return .DONE;
+}
+
 execute_reload_workspace :: (action: Deferred_Action) -> Action_Result {
     reload_workspace(action.details.reload_workspace.automatic);
     return .CANCEL;  // final command
@@ -436,6 +477,11 @@ execute_build_command :: (action: Deferred_Action) -> Action_Result {
     command := ifx command_id > 0 then *config.build.commands[command_id-1] else *config.build.defaults;
     execute_build_command(command);
     return .CANCEL;  // final command
+}
+
+execute_abort_workspace_scanning :: (action: Deferred_Action) -> Action_Result {
+    if !workspace_scan_complete then abort_workspace_scanning_and_shut_down_threads();
+    return .DONE;
 }
 
 execute_wait_for_scanning :: (action: Deferred_Action) -> Action_Result {
@@ -454,7 +500,8 @@ execute_wait_for_killed_command_to_stop :: (action: Deferred_Action) -> Action_R
 
 execute_close_editor :: (action: Deferred_Action) -> Action_Result {
     editor_id := action.details.close_editor.editor_id;
-    close_editor_by_id(editor_id);
+    pane := close_editor_by_id(editor_id);
+    if config.settings.closing_last_editor_in_pane_should_close_pane && pane && !pane.editor_ids then close_pane(pane);
     return .DONE;
 }
 

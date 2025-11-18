@@ -35,9 +35,9 @@
 
 # Example error regexes:
 # For jai:    ^(?P<file>.*):(?P<line>\d+),(?P<col>\d+): (?P<type>Error|Warning|Info|...):* (?P<msg>.*)|^(?P<msg1>.*error LNK.*)
-# For msvc:   ^(?P<file>.*)\((?P<line>\d+),?(?P<col>\d+)?\)[ ]?: (?P<type>error|warning) (?P<msg>.*)$
+# For msvc:   ^(?P<file>.*)\((?P<line>\d+),?(?P<col>\d+)?\)[ ]?: (?P<type>fatal error|error|warning) (?P<msg>.*)$
 # For golang: ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<msg>.*)$
-# For gcc:    ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<type>error|warning): (?P<msg>.*) (\[(?P<msg1>.*)\])?$
+# For gcc:    ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<type>fatal error|error|warning): (?P<msg>.*)( \[(?P<msg1>.*)\])?$
 # ... let us know what regex works for you and we'll add it here
 
 # NOTE:
@@ -46,6 +46,8 @@
 # %FILE_DIR%  - the directory of the currently active file
 # %FILE_NAME% - current file name, with extension
 # %FILE_NAME_NO_EXTENSION% - current file name, without extension
+# %FILE_LINE%   - line under cursor in current file
+# %FILE_COLUMN% - column under cursor in current file
 # %BUILD_WORKING_DIR% - working dir of the build command
 # %RUN_WORKING_DIR%   - working dir of the run command
 # %PROJECT_CONFIG_DIR% - path of the directory containing the active project config file

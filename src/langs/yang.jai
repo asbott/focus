@@ -7,7 +7,7 @@ tokenize_yang :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] 
 
         using tokenizer;
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+        highlight_token(buffer, token);
     }
 
     return .[];
@@ -27,9 +27,9 @@ get_next_token :: (using tokenizer: *Tokenizer) -> Token {
 
     char := << t;
 
-    if is_alpha(char) {
+    if ascii_is_alpha(char) {
         parse_identifier(tokenizer, *token);
-    } else if is_digit(char) {
+    } else if ascii_is_digit(char) {
         parse_number(tokenizer, *token);
     } else if char == {
         case #char "\"";        parse_string_literal(tokenizer, *token, char);
@@ -62,7 +62,7 @@ parse_identifier :: (using tokenizer: *Tokenizer, token: *Token) {
     sanitized_string := replace(identifier_str, "-", "_");
 
     if sanitized_string.count <= MAX_KEYWORD_LENGTH {
-        kw_token, ok := table_find(*KEYWORD_MAP, sanitized_string);
+        ok, kw_token := table_find(*KEYWORD_MAP, sanitized_string);
         if ok {
             token.type = kw_token.type;
             token.keyword = kw_token.keyword;
@@ -77,11 +77,11 @@ parse_number :: (using tokenizer: *Tokenizer, token: *Token) {
     t += 1;
     if t >= max_t return;
 
-    if is_digit(<< t) || << t == #char "_" {
+    if ascii_is_digit(<< t) || << t == #char "_" {
         // Decimal
         t += 1;
         seen_decimal_point := false;
-        while t < max_t && (is_digit(<< t) || << t == #char "_" || << t == #char ".") {
+        while t < max_t && (ascii_is_digit(<< t) || << t == #char "_" || << t == #char ".") {
             if << t == #char "." {
                 if seen_decimal_point break;
                 seen_decimal_point = true;
@@ -137,7 +137,7 @@ read_identifier_string :: (using tokenizer: *Tokenizer) -> string {
 
     while t < max_t {
         c := <<t;
-        if is_alnum(c) || c == #char "-"  { t += 1; continue; }
+        if ascii_is_alnum(c) || c == #char "-"  { t += 1; continue; }
         break;
     }
     if t >= max_t then t = max_t;
@@ -147,8 +147,7 @@ read_identifier_string :: (using tokenizer: *Tokenizer) -> string {
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     // Additional info to distinguish between keywords/punctuation
     union {
@@ -225,4 +224,3 @@ MAX_KEYWORD_LENGTH :: #run -> s32 {
     for TYPE_KEYWORDS  { if it.count > result then result = it.count; }
     return xx result;
 }
-

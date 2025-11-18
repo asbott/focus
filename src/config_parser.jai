@@ -114,10 +114,10 @@ parse_config :: (name: string, file_path: string, file_data: string, for_highlig
             for section : CONFIG_SECTIONS {
                 print_to_builder(*b, "    case .%;  success, error_msg = %(*parser, line);\n", replace(section.name, " ", "_"), section.parse_function);
             }
-            code := #string JAI
+            code := #string,\% JAI
                 case .none;
                     if !parse_for_highlighting {
-                        result.error_msg = log_parser_error(parser, "Expected a top-level section definition, got '%%'", line);
+                        result.error_msg = log_parser_error(parser, "Expected a top-level section definition, got '\%'", line);
                         return result;
                     }
             JAI
@@ -205,6 +205,7 @@ map_name_to_color :: (name: string) -> Color {
         case "scrollbar_background";                    return .SCROLLBAR_BACKGROUND;
         case "cursor";                                  return .CURSOR;
         case "cursor_inactive";                         return .CURSOR_INACTIVE;
+        case "cursor_line_highlight";                   return .CURSOR_LINE_HIGHLIGHT;
         case "paste_animation";                         return .PASTE_ANIMATION;
         case "splitter";                                return .SPLITTER;
         case "splitter_hover";                          return .SPLITTER_HOVER;
@@ -237,12 +238,16 @@ map_name_to_color :: (name: string) -> Color {
         case "region_warning";                          return .REGION_WARNING;
         case "region_error";                            return .REGION_ERROR;
         case "region_heredoc";                          return .REGION_HEREDOC;
+        case "region_addition";                         return .REGION_ADDITION;
+        case "region_deletion";                         return .REGION_DELETION;
 
         case "build_panel_background";                  return .BUILD_PANEL_BACKGROUND;
         case "build_panel_scrollbar";                   return .BUILD_PANEL_SCROLLBAR;
         case "build_panel_scrollbar_hover";             return .BUILD_PANEL_SCROLLBAR_HOVER;
         case "build_panel_scrollbar_background";        return .BUILD_PANEL_SCROLLBAR_BACKGROUND;
         case "build_panel_title_bar";                   return .BUILD_PANEL_TITLE_BAR;
+
+        case "color_preview_title_bar";                 return .COLOR_PREVIEW_TITLE_BAR;
     }
 
     return .NONE;
@@ -386,15 +391,15 @@ maybe_switch_section :: (using parser: *Config_Parser, line: string, fix_section
                 JAI
                 print_to_builder(*b, code, section.name, replace(section.name, " ", "_"));
             }
-            code := #string JAI
+            code := #string,\% JAI
                 case;
-                    return true, tprint("Unknown top-level section %%", line);
+                    return true, tprint("Unknown top-level section \%", line);
             JAI
             print_to_builder(*b, code);
             append(*b, "}\n");
             return builder_to_string(*b);
         }
-        add_highlight(parser, 0, line.count, .header);
+        add_highlight(parser, 0, line.count, .header1);
 
         if active_section == .style then result.config.offsets.style_section = line_start_offset;
 
@@ -550,7 +555,7 @@ parse_style_line :: (using parser: *Config_Parser, line: string) -> success: boo
             setting, value := break_by_spaces(line);
             setting = trim_right(setting, ":");
 
-            font_settings := string.[ "font", "font_ui", "font_ui_bold", "font_size", "font_ui_size", "anti_aliasing", "hinting" ];
+            font_settings := string.[ "font", "font_ui", "font_ui_bold", "font_ui_bold_italic", "font_size", "font_ui_size", "anti_aliasing", "hinting" ];
             if !array_find(font_settings, setting) {
                 add_highlight(parser, 0, setting.count, .error);
                 return true, tprint("Unknown font option '%'. Available options: ", setting, join(..font_settings, ", ",, temp));
@@ -582,6 +587,15 @@ parse_style_line :: (using parser: *Config_Parser, line: string) -> success: boo
                     } else {
                         add_highlight(parser, value.data - line.data, value.count, .error);
                         result.config.font_ui_bold = "default";
+                        return true, error_msg;
+                    }
+                case "font_ui_bold_italic";
+                    found, error_msg := find_font_by_name(value);
+                    if found {
+                        result.config.font_ui_bold_italic = value;
+                    } else {
+                        add_highlight(parser, value.data - line.data, value.count, .error);
+                        result.config.font_ui_bold_italic = "default";
                         return true, error_msg;
                     }
                 case "font_size";
@@ -622,7 +636,7 @@ parse_style_line :: (using parser: *Config_Parser, line: string) -> success: boo
                         result.config.font_hinting = some(bool_val);
                     } else {
                         add_highlight(parser, cast(s64)(value.data - line.data), value.count, .error);
-                        return true, tprint("Couldn't parse '%1' - expected 'true' or 'false', got '%%'", value);
+                        return true, tprint("Couldn't parse '%' - expected 'true' or 'false', got '%'", setting, value);
                     }
             }
 
@@ -792,37 +806,37 @@ parse_build_line :: (using parser: *Config_Parser, line: string) -> success: boo
 
             if option.type.type == {
                 case .BOOL;
-                    code := #string JAI
+                    code := #string,\% JAI
                         val, success := parse_bool(*value);
                         if success {
                             target.%1 = val;
                             add_highlight(parser, setting_value.data - line.data, setting_value.count, .value);
                         } else {
                             add_highlight(parser, setting_value.data - line.data, setting_value.count, .error);
-                            return true, tprint("Couldn't parse '%1' - expected 'true' or 'false', got '%%'", setting_value);
+                            return true, tprint("Couldn't parse '%1' - expected 'true' or 'false', got '\%'", setting_value);
                         }
                     JAI
                     print_to_builder(*b, code, option.name);
 
                 case .INTEGER;
-                    code := #string JAI
+                    code := #string,\% JAI
                         val, success := parse_int(*value);
                         if success {
                             target.%1 = val;
                             add_highlight(parser, setting_value.data - line.data, setting_value.count, .value);
                         } else {
                             add_highlight(parser, setting_value.data - line.data, setting_value.count, .error);
-                            return true, tprint("Couldn't parse '%1' - a valid integer, got '%%'", setting_value);
+                            return true, tprint("Couldn't parse '%1' - a valid integer, got '\%'", setting_value);
                         }
                     JAI
                     print_to_builder(*b, code, option.name);
 
                 case .STRING;
-                    code := #string JAI
+                    code := #string,\% JAI
                         if setting_value {
                             target.%1 = setting_value;  // points into the file data!
                         } else {
-                            return true, tprint("Build command option '%%' can't be empty", setting_name);
+                            return true, tprint("Build command option '\%' can't be empty", setting_name);
                         }
                     JAI
                     print_to_builder(*b, code, option.name);
@@ -833,7 +847,8 @@ parse_build_line :: (using parser: *Config_Parser, line: string) -> success: boo
                             // Exit early if variables are used in path
                             vars_used := false;
                             var_names := string.[
-                                "%FILE%", "%FILE_DIR%", "%FILE_NAME%", "%FILE_NAME_NO_EXTENSION%", "%PROJECT_CONFIG_DIR%",
+                                "%FILE%", "%FILE_DIR%", "%FILE_NAME%", "%FILE_NAME_NO_EXTENSION%",
+                                "%FILE_LINE%", "%FILE_COLUMN%", "%PROJECT_CONFIG_DIR%",
                             ];
                             for var : var_names {
                                 start_index := 0;
@@ -849,13 +864,13 @@ parse_build_line :: (using parser: *Config_Parser, line: string) -> success: boo
                         JAI
                         append(*b, code);
 
-                        code = #string JAI
+                        code = #string,\% JAI
                             // Validate path and handle relative paths
                             dir_path := copy_temporary_string(setting_value);
                             path_overwrite_separators(dir_path, #char "/");
                             working_dir := get_working_directory_from_workspace(result.config.members);
                             relative_to_working_dir := !is_absolute_path(dir_path) && working_dir;
-                            abs_path := ifx relative_to_working_dir then tprint("%%/%%", working_dir, dir_path) else dir_path;
+                            abs_path := ifx relative_to_working_dir then tprint("\%/\%", working_dir, dir_path) else dir_path;
 
                             if file_exists(abs_path) {
                                 target.%1 = copy_string(abs_path);
@@ -865,15 +880,16 @@ parse_build_line :: (using parser: *Config_Parser, line: string) -> success: boo
 
                                 // Highlight the bad chunk
                                 for chunk : split(dir_path, "/",, temp) {
+                                    if !chunk continue;
                                     dir_prefix := slice(dir_path, 0, chunk.data - dir_path.data + chunk.count);
                                     if !dir_prefix continue;
-                                    abs_dir_prefix := ifx relative_to_working_dir then tprint("%%/%%", working_dir, dir_prefix) else dir_prefix;
+                                    abs_dir_prefix := ifx relative_to_working_dir then tprint("\%/\%", working_dir, dir_prefix) else dir_prefix;
                                     if !file_exists(abs_dir_prefix) {
                                         add_highlight(parser, setting_value.data - line.data + chunk.data - dir_path.data, chunk.count, .error);
                                         break;
                                     }
                                 }
-                                return true, tprint("Tried to use '%%' as a working dir in a build command, but it doesn't exist.", abs_path);
+                                return true, tprint("Tried to use '\%' as a working dir in a build command, but it doesn't exist.", abs_path);
                             }
                         JAI
                         print_to_builder(*b, code, option.name);
@@ -884,6 +900,7 @@ parse_build_line :: (using parser: *Config_Parser, line: string) -> success: boo
                         code := #string JAI
                             var_names := string.[
                                 "%FILE%", "%FILE_DIR%", "%FILE_NAME%", "%FILE_NAME_NO_EXTENSION%",
+                                "%FILE_LINE%", "%FILE_COLUMN%",
                                 "%BUILD_WORKING_DIR%", "%RUN_WORKING_DIR%", "%PROJECT_CONFIG_DIR%",
                             ];
                             for var : var_names {
@@ -1065,11 +1082,20 @@ parse_settings_line :: (using parser: *Config_Parser, line: string) -> success: 
         for setting : type_info(Settings).members {
             print_to_builder(*b, "    case \"%\";\n", setting.name);
             if setting.type.type == {
+                case .STRING;
+                    // Nothing to parse
+                    code := construct_parse_code(
+                        setting.name,
+                        "val, success := trim(value), true;",
+                        "\"\"",
+                    );
+                    append(*b, code);
+
                 case .BOOL;
                     code := construct_parse_code(
                         setting.name,
                         "val, success := parse_bool(*value);",
-                        "tprint(\"Couldn't parse '%1' - expected 'true' or 'false', got '%%'\", setting_value)",
+                        "tprint(\"Couldn't parse '%1' - expected 'true' or 'false', got '\%'\", setting_value)",
                     );
                     append(*b, code);
 
@@ -1077,7 +1103,7 @@ parse_settings_line :: (using parser: *Config_Parser, line: string) -> success: 
                     code := construct_parse_code(
                         setting.name,
                         "val, success := parse_int(*value);",
-                        "tprint(\"Couldn't parse '%1' - expected a valid integer, got '%%'\", setting_value)",
+                        "tprint(\"Couldn't parse '%1' - expected a valid integer, got '\%'\", setting_value)",
                     );
                     append(*b, code);
 
@@ -1085,7 +1111,7 @@ parse_settings_line :: (using parser: *Config_Parser, line: string) -> success: 
                     code := construct_parse_code(
                         setting.name,
                         "val, success := parse_float(*value);",
-                        "tprint(\"Couldn't parse '%1' - expected a valid float, got '%%'\", setting_value)",
+                        "tprint(\"Couldn't parse '%1' - expected a valid float, got '\%'\", setting_value)",
                     );
                     append(*b, code);
 
@@ -1099,7 +1125,7 @@ parse_settings_line :: (using parser: *Config_Parser, line: string) -> success: 
                             val := cast(enum_type) 0;
                             if success then val = xx enum_info.values[idx];
                         JAI,
-                        "tprint(\"Couldn't parse '%1' - valid values: %%\", join(..enum_info.names, \", \"))",
+                        "tprint(\"Couldn't parse '%1' - valid values: \%\", join(..enum_info.names, \", \"))",
                     );
                     append(*b, code);
             }
@@ -1296,7 +1322,7 @@ parse_key_combo :: (using parser: *Config_Parser, combo_str: string, line: strin
 
         if (key_code >= #char "a") && (key_code <= #char "z") {
             // Uppercase it, since our keyboard codes are uppercase.
-            key_code += (#char "a" - #char "A");
+            key_code -= (#char "a" - #char "A");
         }
 
         if s.count > 0 {
@@ -1389,13 +1415,13 @@ Parsed_Config :: struct {
     file_specific_settings: [..] File_Specific_Settings;
 
     // Style
-    theme:        string;
-    font:         string;
-    font_size:    int;
-    font_ui:      string;
-    font_ui_bold: string;
-    font_ui_size: int;
-
+    theme:                  string;
+    font:                   string;
+    font_size:              int;
+    font_ui:                string;
+    font_ui_bold:           string;
+    font_ui_bold_italic:    string;
+    font_ui_size:           int;
     font_hinting:       Option(bool);
     font_anti_aliasing: Option(Font_Anti_Aliasing);
 
@@ -1424,8 +1450,9 @@ Config_Parse_Result :: struct {
     error_msg:  string;  // temp
 
     warnings:   [..] string;
-    highlights: [..] Code_Highlight;
     warnings.allocator   = temp;  // I love jai
+
+    highlights: [..] Code_Highlight;
     highlights.allocator = temp;
 }
 

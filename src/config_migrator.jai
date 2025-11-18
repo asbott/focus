@@ -125,7 +125,12 @@ maybe_migrate_config :: (name: string, file_data: string) -> migrated: bool, mod
                         print_to_builder(*b, "%\n", it);   // add as is
                     } else {
                         extension := trim_left(trim(it), ".");
-                        if !is_known_text_file_extension(extension) then print_to_builder(*b, "*.%\n", extension);  // convert to a wildcard
+                        text_file_extensions :: string.[
+                            "jai", "c", "cpp", "h", "hpp", "cc", "cs", "d", "txt", "md", "ini", "csv", "log",
+                            "sql", "py", "m", "html", "xml", "plist", "js", "jsx", "ts", "tsx", "json", "yml",
+                            "yaml", "toml", "zig", "odin", "focus-config", "focus-theme",
+                        ];
+                        if !array_find(text_file_extensions, extension) then print_to_builder(*b, "*.%\n", extension);  // convert to a wildcard
                     }
                 }
                 allow_contents = trim(builder_to_string(*b));
@@ -143,7 +148,13 @@ maybe_migrate_config :: (name: string, file_data: string) -> migrated: bool, mod
                         print_to_builder(*b, "%\n", it);   // add as is
                     } else {
                         extension := trim_left(trim(it), ".");
-                        if !is_known_binary_file_extension(extension) then print_to_builder(*b, "*.%\n", extension);  // convert to a wildcard
+                        binary_extensions :: string.[
+                            "exe", "pdb", "ttf", "otf", "eot", "woff", "dll", "lib", "dylib", "so", "a", "o", "pdf",
+                            "jpg", "png", "gif", "jpeg", "ico", "tif", "tiff", "tga", "bmp", "webp", "mp3", "wav", "ogg",
+                            "wma", "blend", "blend1", "obj", "fbx", "dae", "3ds", "dat", "msh2", "mpg", "mpeg", "psd", "codex",
+                            "webm", "zip", "rar", "7z", "bin", "sys", "iso", "nib", "exp", "pyc", "rpyc", "DS_Store", "dmg",
+                        ];
+                        if !array_find(binary_extensions, extension) then print_to_builder(*b, "*.%\n", extension);  // convert to a wildcard
                     }
                 }
                 ignore_contents = trim(builder_to_string(*b));
@@ -263,7 +274,7 @@ DONE
                 if !table_contains(*config_info.colors_present, added.name) && valid_version(added.version, config_info.version) {
                     value := added.default;
                     if added.value_from {
-                        source_value, success := table_find(*config_info.colors_present, added.value_from);
+                        success, source_value := table_find(*config_info.colors_present, added.value_from);
                         if success && source_value then value = source_value;
                     }
                     padding := get_tmp_spaces(COLOR_VALUES_INDENT - added.name.count - 1);
@@ -390,16 +401,16 @@ DONE
                             b: String_Builder;
                             append(*b, "if color_name == {\n");
                             for RENAMED_COLORS {
-                                code := #string JAI
+                                code := #string,\% JAI
                                     case "%1";
                                         if valid_version(%3, config_info.version) {
                                             force_value_from := "%4";
                                             if force_value_from {
-                                                source_value, success := table_find(*config_info.colors_present, force_value_from);
+                                                success, source_value := table_find(*config_info.colors_present, force_value_from);
                                                 if success && source_value then color_value = source_value;
                                             }
                                             padding  := get_tmp_spaces(COLOR_VALUES_INDENT - "%2".count - 1);
-                                            new_line := tprint("%2:%%1%%2\n", padding, color_value);
+                                            new_line := tprint("%2:\%1\%2\n", padding, color_value);
                                             offset_difference += replace_line(*modified_data, line_start_offset, new_line);
                                         }
                                 JAI
@@ -506,7 +517,22 @@ ADDED_SETTINGS :: Added_Setting.[
     .{ 16, "scrollbar_fade_out_delay_seconds",                   "1.0   # how long the scrollbar stays visible after scrolling" },
     .{ 16, "scroll_behind_first_line",                           "false" },
     .{ 18, "active_pane_border_width",                           "1.0   # set the width to 0.0 to disable" },
-    .{ 18, "inactive_pane_dim_overlay_opacity",                  "0.1   # controls how dim the inactive panes should be" },
+    .{ 18, "inactive_pane_dim_overlay_opacity",                  "0.0   # controls how dim the inactive panes should be" },
+
+    .{ 19, "comment_highlight_words1",                           "TODO, TODO:, NOTE, NOTE:  # a comma-separated list of words to highlight within comments using the color `code_comment_highlight1`" },
+    .{ 19, "comment_highlight_words2",                           "# words to highlight using `code_comment_highlight2`" },
+    .{ 19, "comment_highlight_words3",                           "# words to highlight using `code_comment_highlight3`" },
+    .{ 19, "comment_highlight_words4",                           "# words to highlight using `code_comment_highlight4`" },
+
+    .{ 23, "enable_temporary_editors",                           "true  # when enabled, any editors are opened temporarily until an edit, a save, or a keep_editor command is used. Any newly opened editor will replace the existing temporary editor" },
+    .{ 23, "cursor_position_after_jump",                         "0.45  # controls where the cursor ends up relatively to the viewport after jumping to a search result or an error. 0.0 is top of the screen, 1.0 - bottom, 0.5 - center" },
+    .{ 23, "closing_last_editor_in_pane_should_close_pane",      "true"  },
+    .{ 23, "closing_last_editor_should_exit_program",            "false" },
+    .{ 23, "show_pane_numbers",                                  "false" },
+
+    .{ 24, "show_tab_characters_in_selection",                   "true" },
+
+    .{ 25, "line_endings",                                       "preserve  # options: lf, crlf, preserve" },
 ];
 
 RENAMED_SETTINGS :: Renamed_Setting.[
@@ -520,6 +546,8 @@ RENAMED_SETTINGS :: Renamed_Setting.[
     .{ 11, "show_selected_text_length",           "status_bar_show_selected_text_length", .[], ""},
 
     .{ 17, "editor_history_size", "", .[], "" },  // removed
+
+    .{ 22, "disable_file_open_close_animations", "", .[], "" },  // removed
 ];
 
 SETTING_VALUES_INDENT :: #run -> int {
@@ -540,6 +568,8 @@ RENAMED_COLORS :: Renamed_Color.[
     .{ 4,  "code_string",          "code_string_literal", "" },
 
     .{ 17, "splitter",             "splitter",    "background1" },  // force replace value from background1
+
+    .{ 19, "code_header",          "code_header1", "" },
 ];
 
 
@@ -599,6 +629,19 @@ ADDED_COLORS :: Added_Color.[
     .{ 17, "active_pane_border",               "cursor_inactive",        "19666688" },
 
     .{ 18, "inactive_pane_dim_overlay",        "",                       "050505FF" },
+
+    .{ 19, "code_comment_highlight1",          "code_note",              "E67D74FF" },
+    .{ 19, "code_comment_highlight2",          "code_error",             "FF0000FF" },
+    .{ 19, "code_comment_highlight3",          "code_keyword",           "E0AD82FF" },
+    .{ 19, "code_comment_highlight4",          "code_value"  ,           "D699B5FF" },
+
+    .{ 20, "cursor_line_highlight",            "background4",            "21333FFF" },
+    .{ 20, "color_preview_title_bar",          "background4",            "21333FFF" },
+
+    .{ 21, "code_addition",                    "",                       "33B333FF" },
+    .{ 21, "code_deletion"  ,                  "",                       "E64D4DFF" },
+    .{ 21, "region_addition",                  "",                       "2260224C" },
+    .{ 21, "region_deletion",                  "",                       "7722224C" },
 ];
 
 
@@ -682,7 +725,9 @@ ADDED_KEYBINDS :: Added_Keybind.[
     .{ 17, "common",  "switch_to_pane_8",                           "Ctrl-8",                       "Cmd-8" },
     .{ 17, "common",  "switch_to_pane_9",                           "Ctrl-9",                       "Cmd-9" },
 
-    .{ 18, "editors", "reopen_closed_editor",                       "Ctrl-Shift-T",                 "Cmd-Shift-T"  },
+    .{ 18, "editors", "reopen_closed_editor",                       "Ctrl-Shift-T",                 "Cmd-Shift-T" },
+
+    .{ 23, "editors", "keep_editor",                                "Ctrl-Alt-S Enter",             "Cmd-Opt-S Enter" },
 ];
 
 RENAMED_KEYBINDS :: Renamed_Keybind.[
@@ -701,8 +746,6 @@ RENAMED_KEYBINDS :: Renamed_Keybind.[
     .{ 12, "common",   "delete_word_left",                          "delete_left_by_character_type_fast"  },
     .{ 12, "common",   "delete_word_right_no_underscore",           "delete_right_by_character_type"      },
     .{ 12, "common",   "delete_word_right",                         "delete_right_by_character_type_fast" },
-
-    .{ 13, "common",   "toggle_build_panel",                        "build_panel_toggle" },
 
     .{ 14, "search dialog", "go_to_next_input",                     "focus_next_ui_element"     },
     .{ 14, "search dialog", "go_to_previous_input",                 "focus_previous_ui_element" },
@@ -733,6 +776,9 @@ RENAMED_KEYBINDS :: Renamed_Keybind.[
 
     .{ 17, "common",    "go_to_next_build_error_on_the_side",       "go_to_next_build_error_in_side_pane" },
     .{ 17, "common",    "go_to_previous_build_error_on_the_side",   "go_to_previous_build_error_in_side_pane" },
+
+    .{ 23, "common",    "build_panel_toggle",                       "toggle_build_panel"       },  // for consistency
+    .{ 23, "common",    "build_panel_toggle_focus",                 "toggle_build_panel_focus" },  // for consistency
 ];
 
 #if !NO_OUTPUT_BUILD {
@@ -1248,6 +1294,7 @@ max_entries_in_open_file_dialog:        2000
 insert_spaces_when_pressing_tab:        true
 prefer_system_file_dialogs:             false  # Windows only
 show_cursors_off_screen:                true
+disable_file_open_close_animations:     false
 persist_local_search_results:           false
 strip_trailing_whitespace_on_save:      true
 
@@ -1271,7 +1318,7 @@ SETTINGS_1_EXPECTED :: #string FOCUS_CONFIG
 Ctrl-P                      open_file_by_name
 
 # Added after migration to version [!latest!]
-Ctrl-B                      build_panel_toggle
+Ctrl-B                      toggle_build_panel
 F11                         toggle_fullscreen
 Ctrl-Tab                    switch_between_open_files
 Ctrl-Shift-Alt-N            open_another_editor_instance
@@ -1350,7 +1397,18 @@ scrollbar_fade_in_sensitivity:                   10.0  # controls when the scrol
 scrollbar_fade_out_delay_seconds:                1.0   # how long the scrollbar stays visible after scrolling
 scroll_behind_first_line:                        false
 active_pane_border_width:                        1.0   # set the width to 0.0 to disable
-inactive_pane_dim_overlay_opacity:               0.1   # controls how dim the inactive panes should be
+inactive_pane_dim_overlay_opacity:               0.0   # controls how dim the inactive panes should be
+comment_highlight_words1:                        TODO, TODO:, NOTE, NOTE:  # a comma-separated list of words to highlight within comments using the color `code_comment_highlight1`
+comment_highlight_words2:                        # words to highlight using `code_comment_highlight2`
+comment_highlight_words3:                        # words to highlight using `code_comment_highlight3`
+comment_highlight_words4:                        # words to highlight using `code_comment_highlight4`
+enable_temporary_editors:                        true  # when enabled, any editors are opened temporarily until an edit, a save, or a keep_editor command is used. Any newly opened editor will replace the existing temporary editor
+cursor_position_after_jump:                      0.45  # controls where the cursor ends up relatively to the viewport after jumping to a search result or an error. 0.0 is top of the screen, 1.0 - bottom, 0.5 - center
+closing_last_editor_in_pane_should_close_pane:   true
+closing_last_editor_should_exit_program:         false
+show_pane_numbers:                               false
+show_tab_characters_in_selection:                true
+line_endings:                                    preserve  # options: lf, crlf, preserve
 
 FOCUS_CONFIG
 
@@ -1368,7 +1426,7 @@ SETTINGS_2 :: #string FOCUS_CONFIG
 Ctrl-P                      open_file_by_name
 
 # Added after migration to version [2]
-Ctrl-B                      build_panel_toggle
+Ctrl-B                      toggle_build_panel
 F11                         toggle_fullscreen
 Ctrl-Tab                    switch_between_open_files
 
@@ -1410,7 +1468,7 @@ SETTINGS_2_EXPECTED :: #string FOCUS_CONFIG
 Ctrl-P                      open_file_by_name
 
 # Added after migration to version [2]
-Ctrl-B                      build_panel_toggle
+Ctrl-B                      toggle_build_panel
 F11                         toggle_fullscreen
 Ctrl-Tab                    switch_between_open_files
 
@@ -1490,7 +1548,18 @@ scrollbar_fade_in_sensitivity:                   10.0  # controls when the scrol
 scrollbar_fade_out_delay_seconds:                1.0   # how long the scrollbar stays visible after scrolling
 scroll_behind_first_line:                        false
 active_pane_border_width:                        1.0   # set the width to 0.0 to disable
-inactive_pane_dim_overlay_opacity:               0.1   # controls how dim the inactive panes should be
+inactive_pane_dim_overlay_opacity:               0.0   # controls how dim the inactive panes should be
+comment_highlight_words1:                        TODO, TODO:, NOTE, NOTE:  # a comma-separated list of words to highlight within comments using the color `code_comment_highlight1`
+comment_highlight_words2:                        # words to highlight using `code_comment_highlight2`
+comment_highlight_words3:                        # words to highlight using `code_comment_highlight3`
+comment_highlight_words4:                        # words to highlight using `code_comment_highlight4`
+enable_temporary_editors:                        true  # when enabled, any editors are opened temporarily until an edit, a save, or a keep_editor command is used. Any newly opened editor will replace the existing temporary editor
+cursor_position_after_jump:                      0.45  # controls where the cursor ends up relatively to the viewport after jumping to a search result or an error. 0.0 is top of the screen, 1.0 - bottom, 0.5 - center
+closing_last_editor_in_pane_should_close_pane:   true
+closing_last_editor_should_exit_program:         false
+show_pane_numbers:                               false
+show_tab_characters_in_selection:                true
+line_endings:                                    preserve  # options: lf, crlf, preserve
 
 FOCUS_CONFIG
 
@@ -1534,7 +1603,7 @@ PROJECT_SETTINGS_1_EXPECTED :: #string FOCUS_CONFIG
 Ctrl-P                      open_file_by_name
 
 # Added after migration to version [!latest!]
-Ctrl-B                      build_panel_toggle
+Ctrl-B                      toggle_build_panel
 F11                         toggle_fullscreen
 Ctrl-Tab                    switch_between_open_files
 Ctrl-Shift-Alt-N            open_another_editor_instance
@@ -1657,7 +1726,7 @@ code_builtin_function:                  E0AD82FF
 code_builtin_exception:                 E0AD82FF
 code_directive:                         E67D74FF
 code_directive_modifier:                E67D74FF
-code_header:                            E67D74FF
+code_header1:                           E67D74FF
 code_header2:                           E0AD82FF
 code_header3:                           E0AD82FF
 code_header4:                           E0AD82FF
@@ -1668,6 +1737,16 @@ bracket_highlight:                      FF000026
 indent_guide:                           FF000026
 active_pane_border:                     19666688
 inactive_pane_dim_overlay:              050505FF
+code_comment_highlight1:                E67D74FF
+code_comment_highlight2:                FF0000FF
+code_comment_highlight3:                E0AD82FF
+code_comment_highlight4:                D699B5FF
+cursor_line_highlight:                  21333FFF
+color_preview_title_bar:                21333FFF
+code_addition:                          33B333FF
+code_deletion:                          E64D4DFF
+region_addition:                        2260224C
+region_deletion:                        7722224C
 
 FOCUS_CONFIG
 
@@ -1735,7 +1814,7 @@ code_builtin_function:                  E0AD82FF
 code_builtin_exception:                 E0AD82FF
 code_directive:                         E67D74FF
 code_directive_modifier:                E67D74FF
-code_header:                            E67D74FF
+code_header1:                           E67D74FF
 code_header2:                           E0AD82FF
 code_header3:                           E0AD82FF
 code_header4:                           E0AD82FF
@@ -1746,6 +1825,16 @@ bracket_highlight:                      E8FCFE30
 indent_guide:                           FCEDFC26
 active_pane_border:                     AABBCCFF
 inactive_pane_dim_overlay:              050505FF
+code_comment_highlight1:                E67D74FF
+code_comment_highlight2:                FF0000FF
+code_comment_highlight3:                E0AD82FF
+code_comment_highlight4:                D699B5FF
+cursor_line_highlight:                  21333FFF
+color_preview_title_bar:                21333FFF
+code_addition:                          33B333FF
+code_deletion:                          E64D4DFF
+region_addition:                        2260224C
+region_deletion:                        7722224C
 
 FOCUS_CONFIG
 
@@ -1848,7 +1937,18 @@ scrollbar_fade_in_sensitivity:                   10.0  # controls when the scrol
 scrollbar_fade_out_delay_seconds:                1.0   # how long the scrollbar stays visible after scrolling
 scroll_behind_first_line:                        false
 active_pane_border_width:                        1.0   # set the width to 0.0 to disable
-inactive_pane_dim_overlay_opacity:               0.1   # controls how dim the inactive panes should be
+inactive_pane_dim_overlay_opacity:               0.0   # controls how dim the inactive panes should be
+comment_highlight_words1:                        TODO, TODO:, NOTE, NOTE:  # a comma-separated list of words to highlight within comments using the color `code_comment_highlight1`
+comment_highlight_words2:                        # words to highlight using `code_comment_highlight2`
+comment_highlight_words3:                        # words to highlight using `code_comment_highlight3`
+comment_highlight_words4:                        # words to highlight using `code_comment_highlight4`
+enable_temporary_editors:                        true  # when enabled, any editors are opened temporarily until an edit, a save, or a keep_editor command is used. Any newly opened editor will replace the existing temporary editor
+cursor_position_after_jump:                      0.45  # controls where the cursor ends up relatively to the viewport after jumping to a search result or an error. 0.0 is top of the screen, 1.0 - bottom, 0.5 - center
+closing_last_editor_in_pane_should_close_pane:   true
+closing_last_editor_should_exit_program:         false
+show_pane_numbers:                               false
+show_tab_characters_in_selection:                true
+line_endings:                                    preserve  # options: lf, crlf, preserve
 
 [[keymap]]
 # ...
@@ -1901,7 +2001,7 @@ code_builtin_function:                  E0AD82FF
 code_builtin_exception:                 E0AD82FF
 code_directive:                         E67D74FF
 code_directive_modifier:                E67D74FF
-code_header:                            E67D74FF
+code_header1:                           E67D74FF
 code_header2:                           E0AD82FF
 code_header3:                           E0AD82FF
 code_header4:                           E0AD82FF
@@ -1912,6 +2012,16 @@ bracket_highlight:                      E8FCFE30
 indent_guide:                           FCEDFC26
 active_pane_border:                     19666688
 inactive_pane_dim_overlay:              050505FF
+code_comment_highlight1:                E67D74FF
+code_comment_highlight2:                FF0000FF
+code_comment_highlight3:                E0AD82FF
+code_comment_highlight4:                D699B5FF
+cursor_line_highlight:                  21333FFF
+color_preview_title_bar:                21333FFF
+code_addition:                          33B333FF
+code_deletion:                          E64D4DFF
+region_addition:                        2260224C
+region_deletion:                        7722224C
 
 FOCUS_CONFIG
 
@@ -2020,7 +2130,7 @@ code_builtin_function:                  E0AD82FF
 code_builtin_exception:                 E0AD82FF
 code_directive:                         E67D74FF
 code_directive_modifier:                E67D74FF
-code_header:                            E67D74FF
+code_header1:                           E67D74FF
 code_header2:                           E0AD82FF
 code_header3:                           E0AD82FF
 code_header4:                           E0AD82FF
@@ -2031,6 +2141,16 @@ bracket_highlight:                      E8FCFE30
 indent_guide:                           FCEDFC26
 active_pane_border:                     19666688
 inactive_pane_dim_overlay:              050505FF
+code_comment_highlight1:                E67D74FF
+code_comment_highlight2:                FF0000FF
+code_comment_highlight3:                E0AD82FF
+code_comment_highlight4:                D699B5FF
+cursor_line_highlight:                  21333FFF
+color_preview_title_bar:                21333FFF
+code_addition:                          33B333FF
+code_deletion:                          E64D4DFF
+region_addition:                        2260224C
+region_deletion:                        7722224C
 
 [[keymap]]
 
@@ -2071,6 +2191,7 @@ Ctrl-Alt-D ArrowRight       duplicate_editor_right
 Ctrl-Alt-D ArrowUp          duplicate_editor_top
 Ctrl-Alt-D ArrowDown        duplicate_editor_bottom
 Ctrl-Shift-T                reopen_closed_editor
+Ctrl-Alt-S Enter            keep_editor
 
 [open file dialog]
 Tab                         open_directory
@@ -2087,7 +2208,7 @@ Ctrl-Tab                    switch_between_open_files
 Ctrl-Alt-P                  switch_to_project
 
 # Added after migration to version [!latest!]
-Ctrl-B                      build_panel_toggle
+Ctrl-B                      toggle_build_panel
 F11                         toggle_fullscreen
 Ctrl-Tab                    switch_between_open_files
 Ctrl-Shift-Alt-N            open_another_editor_instance
@@ -2303,7 +2424,7 @@ code_builtin_function:                  E0AD82FF
 code_builtin_exception:                 E0AD82FF
 code_directive:                         E67D74FF
 code_directive_modifier:                E67D74FF
-code_header:                            E67D74FF
+code_header1:                           E67D74FF
 code_header2:                           E0AD82FF
 code_header3:                           E0AD82FF
 code_header4:                           E0AD82FF
@@ -2314,6 +2435,16 @@ bracket_highlight:                      E8FCFE30
 indent_guide:                           FCEDFC26
 active_pane_border:                     19666688
 inactive_pane_dim_overlay:              050505FF
+code_comment_highlight1:                E67D74FF
+code_comment_highlight2:                FF0000FF
+code_comment_highlight3:                E0AD82FF
+code_comment_highlight4:                D699B5FF
+cursor_line_highlight:                  21333FFF
+color_preview_title_bar:                21333FFF
+code_addition:                          33B333FF
+code_deletion:                          E64D4DFF
+region_addition:                        2260224C
+region_deletion:                        7722224C
 
 FOCUS_CONFIG
 
@@ -2474,7 +2605,7 @@ code_builtin_function:                  CDAA7DFF
 code_builtin_exception:                 CDAA7DFF
 code_directive:                         B8860BFF
 code_directive_modifier:                B8860BFF
-code_header:                            B8860BFF
+code_header1:                           B8860BFF
 code_header2:                           CDAA7DFF
 code_header3:                           CDAA7DFF
 code_header4:                           CDAA7DFF
@@ -2485,5 +2616,15 @@ bracket_highlight:                      FCEDFC26
 indent_guide:                           FCEDFC26
 active_pane_border:                     40FF4011
 inactive_pane_dim_overlay:              050505FF
+code_comment_highlight1:                E67D74FF
+code_comment_highlight2:                FF0000FF
+code_comment_highlight3:                B8860BFF
+code_comment_highlight4:                6B8E23FF
+cursor_line_highlight:                  121212FF
+color_preview_title_bar:                121212FF
+code_addition:                          33B333FF
+code_deletion:                          E64D4DFF
+region_addition:                        2260224C
+region_deletion:                        7722224C
 
 FOCUS_CONFIG

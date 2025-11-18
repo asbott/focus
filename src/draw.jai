@@ -42,49 +42,6 @@ draw_frame :: () {
         }
     }
 
-    // !!!!!!!!!!!!! TODO: handle toggle_expand, then delete
-    // if #complete editors.layout == {
-    //     case .None;
-    //         editors_snap_splitter(0.5);
-    //         draw_welcome_screen(screen);
-
-    //     case .Single;
-    //         editors_snap_splitter(0.5);
-    //         draw_editor(editors.left, screen, status_bar_height, .editor_single);
-    //         active_editor_rect = screen;
-
-    //     case .Double;
-    //         // Drag splitter
-    //         if ui.active == .editor_splitter {
-    //             editors_snap_splitter((mouse.pointer.x - screen.x) / screen.w);
-    //             editors.expanded = false;
-    //         }
-    //         if !values_are_close(splitter_pos, splitter_anim.target) {
-    //             redraw_requested = true;
-    //             splitter_pos = get_animation_value(splitter_anim);  // removed the clamp because we want to close smoothly. Will this cause problems? Not sure
-    //         } else if editor_closing_id >= 0 {
-    //             finish_closing_editor();
-    //         }
-    //         if editors.expanded {
-    //             if active_editor_id == editors.left  && !values_are_close(splitter_anim.target, 0.9) then editors_start_moving_splitter(0.9);
-    //             if active_editor_id == editors.right && !values_are_close(splitter_anim.target, 0.1) then editors_start_moving_splitter(0.1);
-    //         }
-
-    //         split_x := screen.w * splitter_pos;
-    //         left_rect, right_rect := cut_left(screen, split_x, margin = 2);
-
-    //         draw_editor(editors.left,  left_rect,  status_bar_height, .editor_left,  screen);
-    //         draw_editor(editors.right, right_rect, status_bar_height, .editor_right, screen);
-
-    //         active_editor_rect = ifx active_editor_id == editors.left then left_rect else right_rect;
-
-    //         splitter_rect := make_rect(left_rect.x + left_rect.w, 0, 2, left_rect.h);
-    //         draw_splitter(splitter_rect, split_x, .editor_splitter);
-
-    //     case .Multi;
-    //         // @split
-    // }
-
     panel_is_active, panel_editor_rect := maybe_draw_color_preview_panel(active_editor_rect);
     if panel_is_active then active_editor_rect = panel_editor_rect;
 
@@ -129,15 +86,15 @@ draw_editor_pane :: (using pane: *Editor_Pane, rect: Rect, root_pane_id: Ui_Id, 
     pane_ui_id := get_ui_id_for_pane(root_pane_id, unique_pane_id);
 
     if layout == .single {
+        clicked := maybe_set_hot_or_active(root_pane_id, rect, .NORMAL);
+        if clicked {
+            activate_editors();
+            clear_all_lingering_actions();
+            editors.active_pane = pane;
+            redraw_requested = true;
+        }
         if editor_index >= 0 {
-            draw_editor(editor_ids[editor_index], rect, pane_ui_id, pane);
-        } else {
-            clicked := maybe_set_hot_or_active(pane_ui_id, rect, .NORMAL);
-            if clicked {
-                activate_editors();
-                editors.active_pane = pane;
-                redraw_requested = true;
-            }
+            draw_editor(editor_ids[editor_index], rect, pane_ui_id, pane, show_status_bar);
         }
         if pane == editors.active_pane && active_global_widget == .editors && editors_get_layout() == .Multi {
             size := floor(config.settings.active_pane_border_width * dpi_scale);
@@ -168,9 +125,14 @@ draw_editor_pane :: (using pane: *Editor_Pane, rect: Rect, root_pane_id: Ui_Id, 
             if layout == .horizontal {
                 splitter_pos = (mouse.pointer.x - rect.x) / rect.w;
             } else {
-                splitter_pos = (mouse.pointer.y - rect.y) / rect.h;
+                splitter_pos = 1.0 - (mouse.pointer.y - rect.y) / rect.h;
             }
             splitter_pos = clamp(splitter_pos, 0.1, 0.9);
+            splitter_anim.target = splitter_pos;
+        }
+        if !values_are_close(splitter_pos, splitter_anim.target) {
+            redraw_requested = true;
+            splitter_pos = get_animation_value(splitter_anim);
         }
 
         // NOTE: this logic is duplicated in gather_leaf_pane_rects
@@ -179,7 +141,7 @@ draw_editor_pane :: (using pane: *Editor_Pane, rect: Rect, root_pane_id: Ui_Id, 
             rect1, rect2 = cut_left(rect, rect.w * splitter_pos, margin = PANE_SPLITTER_WIDTH);
             splitter_rect = make_rect(rect1.x + rect1.w, rect1.y, PANE_SPLITTER_WIDTH, rect1.h);
         } else {
-            rect2, rect1 = cut_bottom(rect, rect.h * splitter_pos, margin = PANE_SPLITTER_WIDTH);
+            rect1, rect2 = cut_top(rect, rect.h * splitter_pos, margin = PANE_SPLITTER_WIDTH);
             splitter_rect = make_rect(rect2.x, rect2.y + rect2.h, rect2.w, PANE_SPLITTER_WIDTH);
         }
 
@@ -365,7 +327,7 @@ draw_user_messages :: (main_area: Rect) {
     message_rect_src := shrink(main_area, margin);
     if !is_valid(message_rect_src) return;
 
-    if config.settings.status_bar_position == .bottom then message_rect_src.y += status_bar_height;
+    if status_bar_is_drawn_at_the_bottom() then message_rect_src.y += status_bar_height;
 
     for < * user_messages {
         // Figure out message height
@@ -424,7 +386,7 @@ draw_key_sequence_in_progress :: (active_editor_rect: Rect) {
     rect_height := cast(float) font_ui_small.character_height + 2 * padding_v;
 
     pen := bottom_left(active_editor_rect) + Vector2.{ margin, margin };
-    if config.settings.status_bar_position == .bottom && editors_get_layout() != .None then pen.y += status_bar_height;
+    if status_bar_is_drawn_at_the_bottom() then pen.y += status_bar_height;
 
     text_y := pen.y + padding_v * 1.5;
 
@@ -492,7 +454,7 @@ maybe_draw_color_preview_panel :: (active_editor_rect: Rect) -> (drawn: bool = f
 
     color_preview_rect := cut_right(active_editor_rect, active_editor_rect.w * color_preview_width, margin = 2);
     color_preview_rect=, color_picker_rect := cut_bottom(color_preview_rect, color_preview_rect.h * color_preview_height);
-    if config.settings.status_bar_position == .bottom {
+    if status_bar_is_drawn_at_the_bottom() {
         _, color_preview_rect = cut_bottom(color_preview_rect, status_bar_height);
     }
     if !is_valid(color_preview_rect) return;
@@ -514,7 +476,7 @@ maybe_draw_color_preview_panel :: (active_editor_rect: Rect) -> (drawn: bool = f
         push_scissor(title_bar_rect);
         defer pop_scissor();
 
-        draw_rect(title_bar_rect, Color.BACKGROUND_4, extra_draw_info = .{is_background = true});
+        draw_rect(title_bar_rect, Color.COLOR_PREVIEW_TITLE_BAR, extra_draw_info = .{is_background = true});
 
         pen := Vector2.{
             x = title_bar_rect.x + char_x_advance,
@@ -573,6 +535,7 @@ maybe_draw_color_preview_panel :: (active_editor_rect: Rect) -> (drawn: bool = f
 
     // Draw the language list
     if is_valid(langs_rect) {
+        scrollbar_id := get_ui_id_from_loc();
         langs_ui_id := get_ui_id_from_loc();
         pressed := maybe_set_hot_or_active(langs_ui_id, langs_rect, .NORMAL);
 
@@ -587,21 +550,61 @@ maybe_draw_color_preview_panel :: (active_editor_rect: Rect) -> (drawn: bool = f
         entry_height := cast(s64) (font_ui_line_height + padding);
         entry_rect := cut_top(langs_rect, xx entry_height);
         entry_rect.y -= padding;
-        x := cast(s64) (entry_rect.x + padding * 1.5);
-        y := cast(s64) (entry_rect.y + (entry_rect.h - font_ui.character_height) / 2.0 + 2);
-        for lang : languages {
+
+        content_height := entry_height * languages.count;
+        max_scroll := max(content_height + padding * 2 - langs_rect.h, 0);
+
+        // Update scrolling.
+        {
+            // Mouse scrolling
+            if (ui.hot_last_frame == langs_ui_id || ui.hot_last_frame == scrollbar_id) && mouse_pointer_is_within(langs_rect) {
+                if mouse.scroll_y_delta != 0 {
+                    target := clamp(color_preview_scroll_y_anim.target - mouse.scroll_y_delta, 0, xx max_scroll);
+                    if mouse.smooth_scroll {
+                        start_animation(*color_preview_scroll_y_anim, color_preview_scroll_y, target);
+                    } else {
+                        color_preview_scroll_y_anim.target = target;
+                        color_preview_scroll_y = target;
+                    }
+                }
+            }
+
+            new_scroll_target := get_new_scroll_target_from_scrollbar(langs_rect, xx content_height, color_preview_scroll_y, color_preview_scroll_y_anim.target, 0, xx max_scroll, scrollbar_id);
+            if (new_scroll_target != color_preview_scroll_y_anim.target) {
+                color_preview_scroll_y_anim.target = new_scroll_target;
+                color_preview_scroll_y = new_scroll_target;
+            }
+
+            if color_preview_scroll_y != color_preview_scroll_y_anim.target {
+                redraw_requested = true;
+                color_preview_scroll_y = get_animation_value(color_preview_scroll_y_anim);
+            }
+        }
+
+        first_visible_language_index := color_preview_scroll_y / entry_height;
+        first_visible_language_y_offset := color_preview_scroll_y % entry_height;
+        entry_rect.y += first_visible_language_y_offset;
+
+        text_x := cast(s64) (entry_rect.x + padding * 1.5);
+        text_y := cast(s64) (entry_rect.y + (entry_rect.h - font_ui.character_height) / 2.0 + 2);
+
+        visible_languages := array_view(languages, first_visible_language_index);
+
+        for lang : visible_languages {
             if mouse_pointer_is_within(entry_rect) && is_hovering_over(langs_ui_id) {
                 draw_rect(entry_rect, Color.LIST_CURSOR_LITE);
                 set_pointer_image(.PRESSABLE);
-                if pressed then color_preview_set_language(it_index);
+                if pressed then color_preview_set_language(it_index + first_visible_language_index);
             }
-            if it_index == selected_lang {
+            if it_index + first_visible_language_index == selected_lang {
                 draw_rect(entry_rect, Color.LIST_CURSOR);
             }
-            Simp.draw_text(font_ui, x, y, lang, xx Color.UI_DEFAULT);
-            y -= entry_height;
+            Simp.draw_text(font_ui, text_x, text_y, lang, xx Color.UI_DEFAULT);
+            text_y -= entry_height;
             entry_rect.y -= entry_height;
         }
+
+        draw_scrollbar(langs_rect, xx content_height, color_preview_scroll_y, color_preview_scroll_y, 0, xx max_scroll, scrollbar_id);
     }
 
     draw_editor(editor_id, editor_rect, color_preview_ui_id, has_status_bar = false);
@@ -768,7 +771,7 @@ maybe_draw_build_panel :: () -> (drawn: bool = false, editor_rect: Rect = .{}) {
     }
     build_panel_rect = cut_bottom(build_panel_rect, build_panel_rect.h * build_panel_height);
 
-    if config.settings.status_bar_position == .bottom && editors_get_layout() != .None {
+    if status_bar_is_drawn_at_the_bottom() {
         _, build_panel_rect = cut_bottom(build_panel_rect, status_bar_height);
     }
 
@@ -869,6 +872,14 @@ get_editor_subrects :: (editor_id: s64, main_area: Rect, has_status_bar: bool) -
     return align_to_grid(rect), status_bar_rect, line_number_panel;
 }
 
+status_bar_is_drawn_at_the_bottom :: inline () -> bool {
+    return config.settings.status_bar_position == .bottom && show_status_bar && editors_get_layout() != .None;
+}
+
+status_bar_is_drawn_at_the_top :: inline () -> bool {
+    return config.settings.status_bar_position == .top && show_status_bar && editors_get_layout() != .None;
+}
+
 get_text_offset :: inline () -> Vector2 {
     return Vector2.{char_x_advance, -char_x_advance};
 }
@@ -881,8 +892,7 @@ coords_from_mouse_position :: (using editor: Editor, rect: Rect) -> Coords {
     return .{ line = xx (mouse_pos.y / line_height), col = xx ((mouse_pos.x / char_x_advance) + 0.5) };
 }
 
-// TODO: remove total_editor_area
-draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pane = null, has_status_bar := true, total_editor_area := Rect.{}) {
+draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pane = null, has_status_bar := true) {
     as_build_panel := is_build_panel(editor_id);
 
     using editor := *open_editors[editor_id];
@@ -899,11 +909,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
 
     if !is_valid(rect) return;
 
-    became_active := maybe_set_hot_or_active(ui_id, rect, .TEXT_SELECT);
-    if became_active {
-        activate_editors();
-        clear_all_lingering_actions();
-    }
+    maybe_set_hot_or_active(ui_id, rect, .TEXT_SELECT);
 
     active_editor_id := get_active_editor_id();
     editor_is_active := editor_id == active_editor_id && Input.input_application_has_focus;
@@ -1134,6 +1140,22 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
     visible_offset_range: Offset_Range;
     cursors_off_screen := 0;
 
+    // Try to position the scrollbar outside the scrollable area if there's space there
+    rect_with_scrollbar := rect;
+    {
+        free_space_on_right := right(main_area) - right(rect);
+        rect_with_scrollbar.w += min(free_space_on_right, scrollbar_width);
+    }
+    num_editor_lines := get_max_line_num(editor, buffer);
+    content_height := (num_editor_lines + 2) * line_height;
+    scroll_behind_height := 0.0;
+    scroll_behind_lines: s32 = 12;
+    if buffer_settings.scroll_beyond_last_line && !as_build_panel && !is_color_preview_panel(editor_id) then content_height += (rect.h - 3 * line_height);
+    if buffer_settings.scroll_behind_first_line && !as_build_panel && !is_color_preview_panel(editor_id) then scroll_behind_height = (scroll_behind_lines * line_height);
+
+    min_y_scroll := cast(s32) -scroll_behind_height;
+    max_y_scroll := max(cast(s32)(content_height - rect.h), 0);
+
     // Draw editor
     {
         min_visible_chars :: 5;
@@ -1142,17 +1164,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
         defer pop_scissor();
 
         // Handle editor scrolling here because we only know the layout at this point.
-        num_editor_lines := get_max_line_num(editor, buffer);
-        content_height := (num_editor_lines + 2) * line_height;
-        scroll_behind_height := 0.0;
-        scroll_behind_lines: s32 = 12;
-        if buffer_settings.scroll_beyond_last_line && !as_build_panel && !is_color_preview_panel(editor_id) then content_height += (rect.h - 3 * line_height);
-        if buffer_settings.scroll_behind_first_line && !as_build_panel && !is_color_preview_panel(editor_id) then scroll_behind_height = (scroll_behind_lines * line_height);
-
-        min_y_scroll := cast(s32) -scroll_behind_height;
-        max_y_scroll := max(cast(s32)(content_height - rect.h), 0);
-
-        if (ui.hot_last_frame == ui_id || ui.hot_last_frame == scrollbar_id) && mouse_pointer_is_within(rect) && mouse.scroll_y_delta != 0 {
+        if (ui.hot_last_frame == ui_id || ui.hot_last_frame == scrollbar_id) && mouse_pointer_is_within(main_area) && mouse.scroll_y_delta != 0 {
             // Mousewheel scrolling - vertical
             // We only handle vertical scrolling here because horizontal scrolling depends on the
             // length of the longest visible line, which we can only determine once we determine
@@ -1209,7 +1221,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
             cursor_pos_from_left := cursor_coords[main_cursor].pos.col  * char_x_advance + text_offset.x;
             cursor_pos_from_top  := cursor_coords[main_cursor].pos.line * line_height;
             left_target          := cast(s32) max(cursor_pos_from_left - rect.w + char_x_advance * 3, 0);
-            top_target           := cast(s32) max(cursor_pos_from_top  - rect.h / 2,  -scroll_behind_height);
+            top_target           := cast(s32) max(cursor_pos_from_top  - rect.h * config.settings.cursor_position_after_jump, -scroll_behind_height);
             if left_target != scroll_x.target then start_animation(*viewport.scroll_x, viewport.left, left_target);
             if top_target  != scroll_y.target then start_animation(*viewport.scroll_y, viewport.top,  top_target);
 
@@ -1328,7 +1340,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
 
         // Update scrollbar without drawing to get the new scrolling position (scrollbar will be drawn later)
         // Do it after we've handled cursor_moved AND after calculating the next scroll_y animation value, because it uses viewport.top
-        new_scroll_target := get_new_scroll_target_from_scrollbar(rect, content_height, viewport.top, viewport.scroll_y.target, min_y_scroll, max_y_scroll, scrollbar_id);
+        new_scroll_target := get_new_scroll_target_from_scrollbar(rect_with_scrollbar, content_height, viewport.top, viewport.scroll_y.target, min_y_scroll, max_y_scroll, scrollbar_id);
         if new_scroll_target != viewport.scroll_y.target {
             // Jump immediately to the scroll point when dragging or clicking scrollbar
             snap_viewport_top_to_target(editor, buffer, new_scroll_target);
@@ -1446,7 +1458,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
                         w = rect.w - ifx x_offset == 0 then char_x_advance,   // @Note: text_origin.x is 1 char_x_advance in, so if we can see the beginning of the line, shorten the rect
                         h = line_height,
                     };
-                    draw_rect(line_rect, Color.BACKGROUND_4, extra_draw_info = .{is_background = true});
+                    draw_rect(line_rect, Color.CURSOR_LINE_HIGHLIGHT, extra_draw_info = .{is_background = true});
                 }
             }
         }
@@ -1630,61 +1642,60 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
                 }
             }
         }
+    }
 
+    // Draw scrollbar and scrollbar marks
+    draw_scrollbar(rect_with_scrollbar, content_height, viewport.top, viewport.scroll_y.target, min_y_scroll, max_y_scroll, scrollbar_id, as_build_panel);
 
-        // Draw scrollbar and scrollbar marks
-        draw_scrollbar(rect, content_height, viewport.top, viewport.scroll_y.target, min_y_scroll, max_y_scroll, scrollbar_id, as_build_panel);
+    if !line_wrap_is_active(editor) && buffer_settings.show_scrollbar_marks {
+        Simp.set_shader_for_color(enable_blend = true);
 
-        if !line_wrap_is_active(editor) && buffer_settings.show_scrollbar_marks {
-            Simp.set_shader_for_color(enable_blend = true);
+        marks_rect := cut_right(rect_with_scrollbar, scrollbar_width);
+        marks_rect =  cut_top(marks_rect, rect.h * max_y_scroll / content_height);
+        marks_rect_top := marks_rect.y + marks_rect.h;
+        assert(buffer.line_starts.count > 0);
 
-            marks_rect := cut_right(rect, scrollbar_width);
-            marks_rect =  cut_top(marks_rect, rect.h * max_y_scroll / content_height);
-            marks_rect_top := marks_rect.y + marks_rect.h;
-            assert(buffer.line_starts.count > 0);
+        highlight_mark_rect := shrink_x(marks_rect, marks_rect.w / 3);
+        highlight_mark_rect.h = floor(4 * dpi_scale);
 
-            highlight_mark_rect := shrink_x(marks_rect, marks_rect.w / 3);
-            highlight_mark_rect.h = floor(4 * dpi_scale);
+        total_scrollable_lines := content_height / line_height;
 
-            total_scrollable_lines := content_height / line_height;
-
-            if !is_empty(search_bar.results) {
-                // Search results
-                for search_bar.results {
-                    pos_from_top := rect.h * cast(float) it.line / total_scrollable_lines;
-                    highlight_mark_rect.y = marks_rect_top - pos_from_top - highlight_mark_rect.h;
-                    draw_rect_raw(highlight_mark_rect, ifx it_index == search_bar.selected_result then Color.SEARCH_RESULT_ACTIVE else Color.SEARCH_RESULT_INACTIVE);
-                }
+        if !is_empty(search_bar.results) {
+            // Search results
+            for search_bar.results {
+                pos_from_top := rect.h * cast(float) it.line / total_scrollable_lines;
+                highlight_mark_rect.y = marks_rect_top - pos_from_top - highlight_mark_rect.h;
+                draw_rect_raw(highlight_mark_rect, ifx it_index == search_bar.selected_result then Color.SEARCH_RESULT_ACTIVE else Color.SEARCH_RESULT_INACTIVE);
             }
+        }
 
-            if !search_bar_is_open(editor) {
-                // Selection highlights
-                for highlights {
-                    pos_from_top := rect.h * cast(float) it.line / total_scrollable_lines;
-                    highlight_mark_rect.y = marks_rect_top - pos_from_top - highlight_mark_rect.h;
-                    draw_rect_raw(highlight_mark_rect, Color.SELECTION_HIGHLIGHT);
-                }
+        if !search_bar_is_open(editor) {
+            // Selection highlights
+            for highlights {
+                pos_from_top := rect.h * cast(float) it.line / total_scrollable_lines;
+                highlight_mark_rect.y = marks_rect_top - pos_from_top - highlight_mark_rect.h;
+                draw_rect_raw(highlight_mark_rect, Color.SELECTION_HIGHLIGHT);
             }
+        }
 
-            // Cursor and selection marks
-            cursor_mark_rect := marks_rect;
-            cursor_mark_rect.h = 2 * dpi_scale;
-            selection_mark_rect := cut_left(marks_rect, marks_rect.w / 3);
+        // Cursor and selection marks
+        cursor_mark_rect := marks_rect;
+        cursor_mark_rect.h = 2 * dpi_scale;
+        selection_mark_rect := cut_left(marks_rect, marks_rect.w / 3);
 
-            for cursor : cursors {
-                coords := cursor_coords[it_index];
-                pos_from_top := rect.h * cast(float) coords.pos.line / total_scrollable_lines;
-                cursor_mark_rect.y = marks_rect_top - pos_from_top - cursor_mark_rect.h;
-                if has_selection(cursor) {
-                    sel_from_top := rect.h * cast(float) coords.sel.line / total_scrollable_lines;
-                    min_pos := min(pos_from_top, sel_from_top);
-                    max_pos := max(pos_from_top, sel_from_top);
-                    selection_mark_rect.y = marks_rect_top - max_pos - cursor_mark_rect.h;
-                    selection_mark_rect.h = max_pos - min_pos + cursor_mark_rect.h;
-                    draw_rect_raw(selection_mark_rect, Color.SELECTION_INACTIVE);
-                }
-                draw_rect_raw(cursor_mark_rect, Color.CURSOR);
+        for cursor : cursors {
+            coords := cursor_coords[it_index];
+            pos_from_top := rect.h * cast(float) coords.pos.line / total_scrollable_lines;
+            cursor_mark_rect.y = marks_rect_top - pos_from_top - cursor_mark_rect.h;
+            if has_selection(cursor) {
+                sel_from_top := rect.h * cast(float) coords.sel.line / total_scrollable_lines;
+                min_pos := min(pos_from_top, sel_from_top);
+                max_pos := max(pos_from_top, sel_from_top);
+                selection_mark_rect.y = marks_rect_top - max_pos - cursor_mark_rect.h;
+                selection_mark_rect.h = max_pos - min_pos + cursor_mark_rect.h;
+                draw_rect_raw(selection_mark_rect, Color.SELECTION_INACTIVE);
             }
+            draw_rect_raw(cursor_mark_rect, Color.CURSOR);
         }
     }
 
@@ -1768,7 +1779,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
         bar_rect := cut_top(main_area, bar_rect_height);
         bar_rect = cut_right(bar_rect, bar_rect.w * width_percentage);
         bar_rect.x -= 2 * char_x_advance;
-        if buffer_settings.status_bar_position == .top bar_rect.y -= status_bar_height;
+        if status_bar_is_drawn_at_the_top() then bar_rect.y -= status_bar_height;
 
         top_rect, results_rect := cut_top(bar_rect, top_rect_height);
 
@@ -1789,7 +1800,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
         Simp.draw_prepared_text(font_ui_small, xx (numbers_rect.x + padding), xx (numbers_rect.y + (numbers_rect.h - font_ui_small.character_height) / 2.0), color = xx Color.UI_DEFAULT);
         input_active := editor_is_active && search_bar.active && active_global_widget == .editors;
         color := ifx !regex_search || (regex_search && regex_is_valid) then Color.UI_DEFAULT else Color.UI_ERROR_BRIGHT;
-        draw_text_input(*search_bar.input, input_rect, active = input_active, ui_id = input_id, label = " Find in buffer", margin_right = input_rect.h * 2, color = color);
+        draw_text_input(*search_bar.input, input_rect, active = input_active, ui_id = input_id, label = " Find in buffer", margin_right = input_rect.h * 3, color = color);
 
         button_width := input_rect.h;
         pressed, hover_match_case, hover_match_word, hover_regex_search := false, false, false, false;
@@ -2026,6 +2037,7 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
     }
 
     // Draw status bar
+    file_info_offset := 0.0;  // when pane numbers are drawn we will use this to offset the pane editors popup
     if has_status_bar {
         status_bar_bg_color := Color.BACKGROUND_4;
         draw_rect(status_bar_rect, status_bar_bg_color, extra_draw_info = .{is_background = true});
@@ -2033,15 +2045,17 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
             case .bottom; draw_top_shadow(status_bar_rect);
             case .top; draw_bottom_shadow(status_bar_rect);
         }
-        draw_status_bar(editor, buffer, status_bar_rect, status_bar_bg_color, buffer_settings, text_offset, cursors_off_screen);
+        file_info_offset = draw_status_bar(editor, buffer, pane, ui_id, status_bar_rect, status_bar_bg_color, buffer_settings, text_offset, cursors_off_screen);
     }
 
     if should_show_pane_editors(pane) {
-        draw_pane_editors(pane, main_area, status_bar_rect, text_offset);
+        draw_pane_editors(pane, main_area, text_offset, file_info_offset);
     }
 }
 
-draw_pane_editors :: (pane: *Editor_Pane, main_area: Rect, status_bar_rect: Rect, text_offset: Vector2) {
+draw_pane_editors :: (pane: *Editor_Pane, main_area: Rect, text_offset: Vector2, file_info_offset: float) {
+    if !pane.editor_ids return;
+
     margin  := floor(8 * dpi_scale);
     padding := floor(4 * dpi_scale);
 
@@ -2055,12 +2069,23 @@ draw_pane_editors :: (pane: *Editor_Pane, main_area: Rect, status_bar_rect: Rect
         for pane.editor_ids {
             editor, buffer := get_editor_and_buffer(it);
 
-            _, pen := draw_file_info(buffer, 0, padding, Vector2.{}, flags = .file_name | .modified, dry_run = true);
+            font_variant := File_Info_Font_Variant.bold;
+            if it_index == pane.temporary_editor_index && config.settings.enable_temporary_editors then font_variant = .bold_italic;
+
+            _, pen := draw_file_info(buffer, 0, padding, Vector2.{}, flags = .file_name | .modified, dry_run = true, font_variant = font_variant);
             if max_file_name_width < pen.x then max_file_name_width = pen.x;
 
             _, pen = draw_file_info(buffer, 0, padding, Vector2.{}, flags = .folder, dry_run = true);
             if max_folder_name_width < pen.x then max_folder_name_width = pen.x;
         }
+    }
+
+    // Get the status bar rect even if it's hidden
+    status_bar_rect: Rect;
+    if config.settings.status_bar_position == .bottom {
+        status_bar_rect = cut_bottom(main_area, status_bar_height);
+    } else {
+        status_bar_rect = cut_top(main_area, status_bar_height);
     }
 
     // Figure out the position and dimensions of the rect
@@ -2075,6 +2100,7 @@ draw_pane_editors :: (pane: *Editor_Pane, main_area: Rect, status_bar_rect: Rect
     // Align the first entry with the status bar file name
     entry_rect := cut_left(main_area, real_width);
     entry_rect  = cut_bottom(entry_rect, entry_height);
+    entry_rect.x += file_info_offset;
     pen := Vector2.{
         entry_rect.x + text_offset.x,
         status_bar_rect.y + (status_bar_rect.h - font_ui.character_height) / 2 + 2 * dpi_scale,
@@ -2134,7 +2160,10 @@ draw_pane_editors :: (pane: *Editor_Pane, main_area: Rect, status_bar_rect: Rect
             draw_rounded_rect_with_corners(entry_rect, Color.LIST_CURSOR, tl = top_corners, tr = top_corners, br = bottom_corners, bl = bottom_corners);
         }
 
-        _, pen_after := draw_file_info(buffer, 0, padding, pen, flags = .file_name | .modified);
+        font_variant := File_Info_Font_Variant.bold;
+        if it_index == pane.temporary_editor_index && config.settings.enable_temporary_editors then font_variant = .bold_italic;
+
+        _, pen_after := draw_file_info(buffer, 0, padding, pen, flags = .file_name | .modified, font_variant = font_variant);
         file_name_width := pen_after.x - pen.x;
         if new_max_file_name_width < file_name_width then new_max_file_name_width = file_name_width;
 
@@ -2159,22 +2188,58 @@ draw_pane_editors :: (pane: *Editor_Pane, main_area: Rect, status_bar_rect: Rect
 
 }
 
-draw_status_bar :: (using editor: Editor, buffer: Buffer, rect: Rect, status_bar_bg_color: Color, buffer_settings: *Settings, text_offset: Vector2, cursors_off_screen: int) {
+draw_status_bar :: (using editor: Editor, buffer: Buffer, pane: *Editor_Pane, editor_ui_id: Ui_Id, rect: Rect, status_bar_bg_color: Color, buffer_settings: *Settings, text_offset: Vector2, cursors_off_screen: int) -> file_info_offset: float {
     push_scissor(rect);
     defer pop_scissor();
 
     status_bar_rect := shrink_x(rect, text_offset.x);
+    file_info_offset := 0.0;
 
     width   := 0.0;
     padding := floor(4 * dpi_scale);
+
+    ui_id := get_ui_id_from_loc(parent_id = editor_ui_id);
+    clicked := maybe_set_hot_or_active(ui_id, status_bar_rect, .NORMAL);
+    if clicked {
+        activate_editors();
+        clear_all_lingering_actions();
+        editors.active_pane = pane;
+        redraw_requested = true;
+    }
 
     pen := Vector2.{
         status_bar_rect.x,
         status_bar_rect.y + (status_bar_rect.h - font_ui.character_height) / 2 + 2 * dpi_scale,
     };
 
+    // Maybe draw pane number
+    if config.settings.show_pane_numbers {
+        pen_x_old := pen.x;
+
+        width := Simp.draw_text(font_ui_bold, xx pen.x, xx pen.y, tprint("%", pane.number), xx Color.UI_DEFAULT);
+        pen.x += width;
+
+        // Separator
+        pen.x += text_offset.x;
+        rect := cut_right(status_bar_rect, 1);
+        rect.x = pen.x;
+        draw_rect(rect, Color.BACKGROUND_0);
+        pen.x += text_offset.x;
+
+        file_info_offset = pen.x - pen_x_old;
+    }
+
     // Draw file name and path
-    width, pen = draw_file_info(buffer, width, padding, pen, flags = .default | .crlf_warning | .config_warning);
+    is_temporary_editor := pane.editor_index == pane.temporary_editor_index && config.settings.enable_temporary_editors;
+    font_variant := ifx is_temporary_editor then File_Info_Font_Variant.bold_italic else File_Info_Font_Variant.bold;
+    pen_old := pen;
+    width, pen = draw_file_info(buffer, width, padding, pen, flags = .default | .crlf_warning | .config_warning, font_variant = font_variant);
+    if is_temporary_editor {
+        hover_rect := Rect.{ pen_old.x, status_bar_rect.y, pen.x - pen_old.x, status_bar_rect.h };
+        if is_hovering_over(ui_id) && mouse_pointer_is_within(hover_rect) && mouse.left.just_double_clicked {
+            maybe_make_temporary_editor_permanent();
+        }
+    }
 
     // Draw line, column numbers, and selection length
     {
@@ -2226,6 +2291,18 @@ draw_status_bar :: (using editor: Editor, buffer: Buffer, rect: Rect, status_bar
             Simp.draw_prepared_text(font_ui_bold, xx pen_x, xx pen.y, color = xx Color.UI_DIM);
         }
 
+        // Draw line separator type
+        if buffer_settings.status_bar_show_indentation {
+            _maybe_draw_separator();
+            label := "LF";
+            if buffer.crlf {
+                label = "CRLF";
+            }
+            width = xx Simp.prepare_text(font_ui_bold, label);
+            pen_x -= width;
+            Simp.draw_prepared_text(font_ui_bold, xx pen_x, xx pen.y, color = xx Color.UI_DIM);
+        }
+
         // Draw indentation type
         if buffer_settings.status_bar_show_indentation {
             _maybe_draw_separator();
@@ -2261,7 +2338,7 @@ draw_status_bar :: (using editor: Editor, buffer: Buffer, rect: Rect, status_bar
             if should_draw_cursors() then draw_rounded_rect(cursor_rect, Color.CURSOR, radius = rounding_radius_small, set_shader = true);
 
             hover_rect := Rect.{ cursor_rect.x - padding, status_bar_rect.y, cursor_rect.w + padding + width + 2 * padding, status_bar_rect.h };
-            cursor_number_id := get_ui_id_from_loc();
+            cursor_number_id := get_ui_id_from_loc(parent_id = editor_ui_id);
             maybe_set_hot_or_active(cursor_number_id, hover_rect, .NORMAL);
             if is_hovering_over(cursor_number_id) {
                 draw_tooltip_bottom_left(tprint("Cursors off screen: %", cursors_off_screen), top_right(cursor_rect));
@@ -2276,6 +2353,8 @@ draw_status_bar :: (using editor: Editor, buffer: Buffer, rect: Rect, status_bar
             draw_rect(fadeout_rect, status_bar_bg_color, extra_draw_info = .{is_background = true, is_translucent_on_the_right = true});
         }
     }
+
+    return file_info_offset;
 }
 
 File_Info_Draw_Flags :: enum_flags {
@@ -2293,7 +2372,13 @@ File_Info_Draw_Flags :: enum_flags {
     default :: file_name | modified | deleted_on_disk | modified_on_disk | read_only | folder | folder_separator;
 }
 
-draw_file_info :: (buffer: Buffer, width: float, padding: float, _pen: Vector2, bold := true, dry_run := false, flags := File_Info_Draw_Flags.default) -> new_width: float, new_pen: Vector2 {
+File_Info_Font_Variant :: enum {
+    normal;
+    bold;
+    bold_italic;
+}
+
+draw_file_info :: (buffer: Buffer, width: float, padding: float, _pen: Vector2, font_variant: File_Info_Font_Variant = .bold, dry_run := false, flags := File_Info_Draw_Flags.default) -> new_width: float, new_pen: Vector2 {
     file_name_color := Color.UI_DEFAULT;
     if buffer.modified then file_name_color = Color.UI_WARNING;
 
@@ -2308,7 +2393,9 @@ draw_file_info :: (buffer: Buffer, width: float, padding: float, _pen: Vector2, 
         width += font_icons.em_width * 1.2;
 
         pen.x += width + padding;
-        file_name_font := ifx bold then font_ui_bold else font_ui;
+        file_name_font := font_ui;
+        if      font_variant == .bold        then file_name_font = font_ui_bold;
+        else if font_variant == .bold_italic then file_name_font = font_ui_bold_italic;
         width = xx Simp.prepare_text(file_name_font, get_buffer_name(buffer));
         if !dry_run then Simp.draw_prepared_text(file_name_font, xx pen.x, xx pen.y, color = xx file_name_color);
     }
@@ -2341,9 +2428,17 @@ draw_file_info :: (buffer: Buffer, width: float, padding: float, _pen: Vector2, 
         if !dry_run then Simp.draw_prepared_text(font_ui_bold, xx pen.x, xx pen.y, color = xx Color.UI_ERROR_BRIGHT);
     }
 
-    if buffer.crlf && (flags & .crlf_warning) {
+    settings := get_settings(buffer);
+
+    if buffer.crlf && settings.line_endings == .lf && (flags & .crlf_warning) {
         pen.x += width + padding;
         width = xx Simp.prepare_text(font_ui, "[CRLF will be replaced with LF on save]");
+        if !dry_run then Simp.draw_prepared_text(font_ui, xx pen.x, xx pen.y, color = xx Color.UI_WARNING);
+    }
+
+    if !buffer.crlf && settings.line_endings == .crlf && (flags & .crlf_warning) {
+        pen.x += width + padding;
+        width = xx Simp.prepare_text(font_ui, "[LF will be replaced with CRLF on save]");
         if !dry_run then Simp.draw_prepared_text(font_ui, xx pen.x, xx pen.y, color = xx Color.UI_WARNING);
     }
 
@@ -2448,16 +2543,9 @@ draw_open_file_dialog :: () {
 
     if #complete mode == {
         case .search;
-            label := ifx finder.initted then " Search files by name" else " Scanning the workspace. Please wait...";
-            draw_text_input(*open_file_dialog.input, input_rect, ui_id = input_id, active = true, label = label);
+            label := ifx finder.initted then " Search files in workspace" else " Scanning the workspace. Please wait...";
+            draw_text_input(*open_file_dialog.input, input_rect, ui_id = input_id, active = true, label = label, progress_bar_value = get_workspace_scan_progress());
             if !finder.initted then redraw_requested = true;  // draw the progress bar and update as soon as we're done
-
-            scan_progress := get_workspace_scan_progress();
-            if scan_progress < 1.0 {
-                progress_bar_rect := shrink(input_rect, 1);
-                progress_bar_rect.w *= scan_progress;
-                draw_rect(progress_bar_rect, Color.LIST_CURSOR_LITE);
-            }
 
         case .open_editors;
             label := " Switch to open file";
@@ -2940,14 +3028,26 @@ draw_theme_dialog :: () {
 
 draw_unsaved_buffers_dialog :: () {
     draw_extra_buffer_names :: (extra_rect: Rect, margin: float, padding: float) {
-        push_scissor(extra_rect);
-        defer pop_scissor();
-
         entry_height  := font_ui_line_height + padding * 2;
+        entry_margin  := margin / 2;
         entry_rect := cut_top(extra_rect, entry_height);
 
-        for unsaved_buffers_dialog.buffer_ids {
-            buffer := *open_buffers[it];
+        num_entries := unsaved_buffers_dialog.buffer_ids.count;
+        max_entries := cast(s64)(extra_rect.h / (entry_height + entry_margin));
+
+        // >, not >= because if there's only one extra file, we might as well just draw that rather than
+        // "1 additional file". We only show the "additional files" text when there are 2+ unsaved files
+        // that cannot be displayed.
+        num_entries_to_draw := num_entries;
+        if num_entries > max_entries {
+            num_entries_to_draw = max_entries - 1; // -1 so we have space to draw a message at the end.
+        }
+
+        num_entries_to_draw = max(num_entries_to_draw, 1);
+
+        for 0..num_entries_to_draw - 1 {
+            buffer_id := unsaved_buffers_dialog.buffer_ids[it];
+            buffer := *open_buffers[buffer_id];
             {
                 push_scissor(entry_rect);
                 defer pop_scissor();
@@ -2960,7 +3060,17 @@ draw_unsaved_buffers_dialog :: () {
 
                 width, _ = draw_file_info(buffer, width, padding, pen);
             }
-            entry_rect.y -= entry_rect.h + margin / 2;
+            entry_rect.y -= entry_rect.h + entry_margin;
+        }
+
+        if num_entries_to_draw < num_entries {
+            extra_files_message := tprint("and % additional files...", num_entries - num_entries_to_draw);
+
+            x := entry_rect.x + margin;
+            y := entry_rect.y + (entry_rect.h - font_ui.character_height) / 2 + 2 * dpi_scale;
+            y = max(y, extra_rect.y + font_ui.character_height / 2); // Clamp to bottom of dialog.
+
+            Simp.draw_text(font_ui, xx x, xx y, extra_files_message, xx Color.UI_WARNING);
         }
     }
 
@@ -2973,6 +3083,7 @@ draw_unsaved_buffers_dialog :: () {
     }
 
     margin  := floor(12 * dpi_scale);
+    padding := floor( 4 * dpi_scale);
 
     draw_generic_confirm_dialog(
         *unsaved_buffers_dialog,
@@ -2980,7 +3091,7 @@ draw_unsaved_buffers_dialog :: () {
         header,
         message,
         draw_extra_buffer_names,
-        extra_height = font_ui_medium_line_height * num_unsaved_buffers + margin,
+        extra_height = (font_ui_line_height + padding * 2 + margin / 2) * num_unsaved_buffers,
     );
 }
 
@@ -3004,6 +3115,9 @@ draw_generic_confirm_dialog :: (dialog: *Generic_Confirm_Dialog, ui_id: Ui_Id, h
         h = header_height + margin + padding + button_height + margin + (extra_height + margin),
     };
     if message then box_rect.h += entry_height + margin;
+    box_rect.h = min(box_rect.h, screen.h * 0.9);
+    box_rect.h = max(box_rect.h, font_ui_line_height * 8);
+
     box_rect.x = floor((screen.w - box_rect.w) / 2);
     box_rect.y = screen.h - box_rect.h - floor(clamp(100 * dpi_scale, 0, (screen.h - box_rect.h) / 2));
 
@@ -3034,7 +3148,7 @@ draw_generic_confirm_dialog :: (dialog: *Generic_Confirm_Dialog, ui_id: Ui_Id, h
         push_scissor(buffers_rect);
         defer pop_scissor();
 
-        entry_rect := cut_top(buffers_rect, entry_height);
+        entry_rect, extra := cut_top(buffers_rect, entry_height);
 
         if message {
             Simp.draw_text(
@@ -3044,10 +3158,14 @@ draw_generic_confirm_dialog :: (dialog: *Generic_Confirm_Dialog, ui_id: Ui_Id, h
                 message,
                 xx Color.UI_DEFAULT,
             );
-            entry_rect.y -= entry_rect.h + margin;
+
+            extra.h -= margin;
         }
 
-        if draw_extra != null then draw_extra(entry_rect, margin, padding);
+        //extra.y += button_height;
+        //extra.h -= button_height;
+
+        if draw_extra != null then draw_extra(extra, margin, padding);
     }
 
     // Buttons
@@ -3179,7 +3297,7 @@ draw_finder :: () {
     {
         label := ifx initted then "Type to search in workspace" else "Scanning the workspace. Please wait...";
         color := ifx !regex_search || (regex_search && regex_is_valid) then Color.UI_DEFAULT else Color.UI_ERROR_BRIGHT;
-        became_active := draw_text_input(*finder.input, input_rect, ui_id = input_id, active = (finder.active_input == .input), label = label, margin_right = input_rect.h * 3, color = color);
+        became_active := draw_text_input(*finder.input, input_rect, ui_id = input_id, active = (finder.active_input == .input), label = label, margin_right = input_rect.h * 3, color = color, progress_bar_value = get_workspace_scan_progress());
         if became_active then finder_activate_input(.input);
 
         button_width := input_rect.h;
@@ -3223,13 +3341,6 @@ draw_finder :: () {
             if combo then tooltip = tprint("% (%)", tooltip, combo);
         }
         if tooltip then draw_tooltip_bottom_left(tooltip, Vector2.{ x = mouse.pointer.x - input_rect.h / 2, y = input_rect.y + input_rect.h / 3 });
-
-        scan_progress := get_workspace_scan_progress();
-        if scan_progress < 1.0 {
-            progress_bar_rect := shrink(input_rect, 1);
-            progress_bar_rect.w *= scan_progress;;
-            draw_rect(progress_bar_rect, Color.LIST_CURSOR_LITE);
-        }
     }
 
     // Include files input
@@ -3375,7 +3486,7 @@ draw_finder :: () {
                 push_scissor(filename_scissor);
                 defer pop_scissor();
 
-                width, pen = draw_file_info(buffer, width, padding, pen, bold = false);
+                width, pen = draw_file_info(buffer, width, padding, pen, font_variant = .normal);
             }
 
             // Line number
@@ -3502,8 +3613,7 @@ draw_go_to_line_dialog :: (active_editor_rect: Rect) {
     bar_rect = cut_right(bar_rect, width);
     bar_rect.x -= 2 * char_x_advance;
 
-    _, buffer := get_active_editor_and_buffer();
-    if buffer && get_settings(buffer).status_bar_position == .top then bar_rect.y -= status_bar_height;
+    if status_bar_is_drawn_at_the_top() then bar_rect.y -= status_bar_height;
 
     maybe_set_hot_or_active(input_id, bar_rect, .NORMAL);
 
@@ -3637,7 +3747,7 @@ draw_range_full_width_lines :: (range: Coords_Range, editor_rect: Rect, visible_
     }
 }
 
-draw_text_input :: (using input: *Text_Input, rect_: Rect, ui_id: Ui_Id, active := false, label: string = "", font: *Simp.Dynamic_Font = null, color := Color.UI_DEFAULT, margin_left := 1.0, margin_right := 1.0) -> became_active := false {
+draw_text_input :: (using input: *Text_Input, rect_: Rect, ui_id: Ui_Id, active := false, label: string = "", font: *Simp.Dynamic_Font = null, color := Color.UI_DEFAULT, margin_left := 1.0, margin_right := 1.0, progress_bar_value := -1.0) -> became_active := false {
     if !is_valid(rect_) return;
 
     rect := align_to_grid(rect_);  // to get a consistent outline
@@ -3654,6 +3764,12 @@ draw_text_input :: (using input: *Text_Input, rect_: Rect, ui_id: Ui_Id, active 
 
     input_rect.w -= (margin_left + margin_right);
     input_rect.x += margin_left;
+
+    if progress_bar_value > 0.0 && progress_bar_value < 1.0 {
+        progress_bar_rect := shrink(input_rect, 1);
+        progress_bar_rect.w *= progress_bar_value;
+        draw_rect(progress_bar_rect, Color.LIST_CURSOR_LITE);
+    }
 
     if !is_valid(input_rect) return;
 
@@ -4144,6 +4260,8 @@ get_region_color :: (kind: Buffer_Region.Kind) -> Color {
         case .success;          color = Color.REGION_SUCCESS;
         case .warning;          color = Color.REGION_WARNING;
         case .error;            color = Color.REGION_ERROR;
+        case .addition;         color = Color.REGION_ADDITION;
+        case .deletion;         color = Color.REGION_DELETION;
     }
     return color;
 }
@@ -4259,6 +4377,9 @@ Icon :: enum u16 {
 }
 
 PANE_SPLITTER_WIDTH :: 2;
+
+
+show_status_bar := true;
 
 
 #scope_file

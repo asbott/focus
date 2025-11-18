@@ -19,7 +19,7 @@ read_identifier_string :: (using tokenizer: *Tokenizer) -> string {
     identifier: string;
     identifier.data = t;
 
-    while t < max_t && is_alnum(t.*) {
+    while t < max_t && ascii_is_alnum(t.*) {
         t += 1;
     }
     if t >= max_t then t = max_t;
@@ -34,7 +34,7 @@ read_utf8_identifier_string :: (using tokenizer: *Tokenizer, $identifier_chars :
 
     while t < max_t {
         c := t.*;
-        if is_alpha(c) || array_find(cast([] u8) identifier_chars, c) || (t > identifier.data && is_digit(c)) { t += 1; continue; }
+        if ascii_is_alpha(c) || array_find(cast([] u8) identifier_chars, c) || (t > identifier.data && ascii_is_digit(c)) { t += 1; continue; }
 
         // Only check for unicode chars after the most common case is out of the way.
         // We don't do comprehensive checks because Unicode docs are cryptic and we might not need every possible character anyway
@@ -68,9 +68,12 @@ eat_until_newline :: (using tokenizer: *Tokenizer) {
     }
 }
 
-eat_white_space :: (using tokenizer: *Tokenizer) {
+eat_white_space :: (using tokenizer: *Tokenizer, $only_until_newline := false) {
     t_old := t;
-    while t < max_t && is_white_space(t.*) {
+    while t < max_t && ascii_is_space(t.*) {
+        #if only_until_newline {
+            if t.* == #char "\n" break;
+        }
         t += 1;
     }
     had_white_space_to_skip = t != t_old;
@@ -91,32 +94,38 @@ is_white_space :: inline (char : u8) -> bool #no_aoc {
     result : u32 = ---;
 
     // Should be in register, not immediate
-    white_spaces : u64 = (#char " "  <<  0)  // space.
+    WHITE_SPACES : u64 : (#char " "  <<  0)  // space.
                        | (#char "\t" <<  8)  // horizontal tab.
                        | (#char "\n" << 16)  // line feed.
                        | (#char "\r" << 24)  // carriage return.
                        | (0x0C       << 32)  // form feed.    "\f" is not supported in jai at the time of writing
                        | (0x0B       << 40); // vertical tab. "\v" is not supported in jai at the time of writing
 
-    #asm {
-        chars  : vec === 0;
-        mask   : vec === 1;
-        spaces : vec === 2;
-        result       === a;
-        white_spaces === b;
-        char         === c;
+    white_spaces := WHITE_SPACES;
 
-        movq spaces, white_spaces;
+    #if CPU == .X64 {
+        #asm {
+            chars  : vec === 0;
+            mask   : vec === 1;
+            spaces : vec === 2;
+            result       === a;
+            white_spaces === b;
+            char         === c;
 
-        pxor mask, mask;
+            movq spaces, white_spaces;
 
-        // Fill chars with c
-        pinsrb chars, char, 0;
-        pshufb chars, mask;
+            pxor mask, mask;
 
-        pcmpeqb chars, spaces;
+            // Fill chars with c
+            pinsrb chars, char, 0;
+            pshufb chars, mask;
 
-        pmovmskb result, chars;
+            pcmpeqb chars, spaces;
+
+            pmovmskb result, chars;
+        }
+    } else {
+        return char == " " || char == "\t" || char == "\n" || char == "\r" || char == 0x0C || char == 0x0B;
     }
 
     return cast,no_check(bool) result;
@@ -255,6 +264,22 @@ parse_number_c_like :: (using tokenizer: *Tokenizer, token: *$Token) {
     }
 }
 
+highlight_token :: (using buffer: *Buffer, token: Base_Token) {
+    memset(tokens.data + token.start, xx token.type, token.len);
+
+    // Maybe highlight words in comments
+    {
+        if token.type != .comment && token.type != .multiline_comment  return;
+
+        comment_str := cast(string) to_view(buffer.bytes, token.start, token.len);
+
+        output_words := find_whole_words(*config.comment_words_automaton, comment_str);
+        for output_words {
+            memset(buffer.tokens.data + token.start + it.offset, cast(u8) it.token_type, it.len);
+        }
+    }
+}
+
 get_lang_from_name :: (lang_name: string) -> Buffer.Lang, found: bool {
     lowercase_name := to_lower_copy(lang_name,, temp);
     if lowercase_name == {
@@ -265,6 +290,7 @@ get_lang_from_name :: (lang_name: string) -> Buffer.Lang, found: bool {
         case "csharp";       return .CSharp,     true;
         case "css";          return .Css,        true;
         case "d";            return .D,          true;
+        case "dart";         return .Dart,       true;
         case "glsl";         return .Glsl,       true;
         case "hlsl";         return .Hlsl,       true;
         case "go";           return .Golang,     true;
@@ -277,6 +303,7 @@ get_lang_from_name :: (lang_name: string) -> Buffer.Lang, found: bool {
         case "tsx";          return .Js,         true;
         case "lua";          return .Lua,        true;
         case "odin";         return .Odin,       true;
+        case "powershell";   return .Powershell, true;
         case "python";       return .Python,     true;
         case "renpy";        return .RenPy,      true;
         case "rust";         return .Rust,       true;
@@ -296,6 +323,7 @@ get_lang_from_name :: (lang_name: string) -> Buffer.Lang, found: bool {
         case "bash";         return .Shell,      true;
         case "zsh";          return .Shell,      true;
         case "ini";          return .Ini,        true;
+        case "vue";          return .Vue,        true;
 
         // case "focus_config"; return .Focus_Config, true;  // disabled for now
         // case "focus_theme";  return .Focus_Theme,  true;
@@ -312,6 +340,11 @@ Tokenizer :: struct {
 
     prev_tokens: [3] *void;
     had_white_space_to_skip := false;  // to indicate whether any white space was on the left of the current token
+}
+
+Base_Token :: struct {
+    start, len: s32;
+    type: Token_Type = .invalid;
 }
 
 Code_Highlight :: struct {
@@ -342,6 +375,11 @@ Token_Type :: enum u8 {
     comment;
     multiline_comment;
 
+    comment_highlight1;
+    comment_highlight2;
+    comment_highlight3;
+    comment_highlight4;
+
     operation;
     punctuation;
 
@@ -361,10 +399,13 @@ Token_Type :: enum u8 {
     directive;
     directive_modifier;
 
-    header;
+    header1;
     header2;
     header3;
     header4;
     header5;
     header6;
+
+    addition;
+    deletion;
 }

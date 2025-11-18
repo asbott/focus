@@ -42,8 +42,9 @@ ACTIONS_COMMON :: string.[
     "show_default_config",
 
     "toggle_fullscreen",
-    "build_panel_toggle",
-    "build_panel_toggle_focus",
+    "toggle_status_bar",
+    "toggle_build_panel",
+    "toggle_build_panel_focus",
     "build_kill_running_command",
     "build_clear_output",
     "show_troubleshooting_info",
@@ -209,6 +210,8 @@ ACTIONS_EDITORS :: #run arrays_concat(ACTIONS_COMMON, string.[
     "go_to_next_buffer",
     "toggle_line_wrap",
     "toggle_line_numbers",
+    "toggle_pane_numbers",
+    "toggle_indent_guides",
     "copy_current_line_info",
 
     "indentation_detect_from_buffer_contents",
@@ -216,6 +219,9 @@ ACTIONS_EDITORS :: #run arrays_concat(ACTIONS_COMMON, string.[
     "indentation_convert_to_tabs_for_buffer",
     "indentation_convert_to_spaces_for_buffer",
     "reload_from_disk",
+
+    "convert_buffer_to_crlf",
+    "convert_buffer_to_lf",
 
     "split_left",
     "split_right",
@@ -234,9 +240,13 @@ ACTIONS_EDITORS :: #run arrays_concat(ACTIONS_COMMON, string.[
     "move_editor_bottom",
 
     "reopen_closed_editor",
+    "keep_editor",
 
     "rotate_panes_clockwise",
     "rotate_panes_counterclockwise",
+
+    "center_pane_splitter",
+    "center_all_pane_splitters",
 ]);
 
 ACTIONS_OPEN_FILE_DIALOG :: #run arrays_concat(ACTIONS_COMMON, string.[

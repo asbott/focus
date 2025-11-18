@@ -5,7 +5,7 @@ tokenize_uxntal :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [
         token := get_next_token(*tokenizer);
         if token.type == .eof then break;
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+        highlight_token(buffer, token);
     }
 
     return .[];
@@ -107,8 +107,7 @@ OPCODES :: string.[
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     union {
         punctuation: Punctuation;
@@ -184,7 +183,7 @@ parse_identifier :: (using tokenizer: *Tokenizer, token: *Token) {
     }
 
     if ident.count <= MAX_OPCODE_LENGTH {
-        opcode, ok := table_find(*OPCODE_MAP, ident);
+        ok, opcode := table_find(*OPCODE_MAP, ident);
         if ok {
             token.type = .keyword;
             token.opcode = opcode;
@@ -270,4 +269,4 @@ is_hex_digit :: inline (char: u8) -> bool {
     return (char >= #char "a" && char <= #char "f") || (char >= #char "0" && char <= #char "9");
 }
 
-is_alnum :: inline (c: u8) -> bool { return is_alpha(c) || is_digit(c); }
+is_alnum :: inline (c: u8) -> bool { return ascii_is_alpha(c) || ascii_is_digit(c); }

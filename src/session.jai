@@ -229,6 +229,9 @@ deinit_logger :: () {
 
     file_close(*logger_data.log_file);
     file_close(*logger_data.log_error_file);
+
+    // Some plugins, such as Iprof, will log after our session logger has been closed.
+    context.logger = runtime_support_default_logger;
 }
 
 session_notify_modified_buffer :: (buffer_id: s64) {
@@ -374,7 +377,7 @@ save_editor_state_into_file :: () {
     if !success then log_error("Couldn't save editor state into file '%'", state_file_path);
 }
 
-dump_buffer_state :: (buffer_id: s64) -> [] u8 #must {
+dump_buffer_state :: (buffer_id: s64) -> [] u8 {
     buffer := *open_buffers[buffer_id];
 
     // Build buffer state for saving into file

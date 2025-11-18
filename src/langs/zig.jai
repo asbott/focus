@@ -22,7 +22,7 @@ tokenize_zig :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] B
 
         prev_token.* = token;
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+        highlight_token(buffer, token);
     }
 
     return .[];
@@ -46,9 +46,9 @@ get_next_token :: (using tokenizer: *Tokenizer) -> Token {
     // UTF-8 characters elsewhere are a syntax error.
     char := << t;
 
-    if is_alpha(char) || char == #char "_" {
+    if ascii_is_alpha(char) || char == #char "_" {
         parse_identifier(tokenizer, *token);
-    } else if is_digit(char) {
+    } else if ascii_is_digit(char) {
         parse_number(tokenizer, *token);
     } else if char == {
         case #char "!";  token.type = .operation; token.operation = .bang;                t += 1;
@@ -97,7 +97,7 @@ parse_identifier :: (using tokenizer: *Tokenizer, token: *Token) {
 
     // Maybe it's a keyword
     if identifier_str.count <= MAX_KEYWORD_LENGTH {
-        kw_token, ok := table_find(*KEYWORD_MAP, identifier_str);
+        ok, kw_token := table_find(*KEYWORD_MAP, identifier_str);
         if ok { token.type = kw_token.type; token.keyword = kw_token.keyword; return; }
     }
 
@@ -112,7 +112,7 @@ parse_number :: (using tokenizer: *Tokenizer, token: *Token) {
     if t >= max_t return;
 
     is_decimal_variant :: inline (c: u8) -> bool {
-        return is_digit(c) || c == #char "." || c == #char "-" || c == #char "e" || c == #char "E";
+        return ascii_is_digit(c) || c == #char "." || c == #char "-" || c == #char "e" || c == #char "E";
     }
 
     if is_decimal_variant(t.*) || t.* == #char "_" {
@@ -176,7 +176,7 @@ parse_directive :: (using tokenizer: *Tokenizer, token: *Token) {
 
         // Check if it's one of the existing directives
         if directive_str.count > MAX_DIRECTIVE_LENGTH return;
-        directive, ok := table_find(*DIRECTIVES_MAP, directive_str);
+        ok, directive := table_find(*DIRECTIVES_MAP, directive_str);
         if ok {
             token.type = .directive;
             token.directive = directive;
@@ -280,8 +280,7 @@ parse_char_literal :: (using tokenizer: *Tokenizer, token: *Token) {
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type = .invalid;
+    using #as base: Base_Token;
 
     // Additional info to distinguish between keywords/punctuation
     union {

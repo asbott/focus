@@ -750,7 +750,7 @@ xcb_set_cursor_from_theme :: (window: *Window, name: string) {
     xcb_check_usage(null, window);
     xw : *XCB_Window = window;
     xd := xw.display;
-    cursor, found := table_find(*xd.cursors, name);
+    found, cursor := table_find(*xd.cursors, name);
     if found {
         attrs: xcb_change_window_attributes_value_list_t;
         attrs.cursor = cursor;
@@ -950,25 +950,36 @@ fp3232_to_float :: inline (fp: xcb_input_fp3232_t) -> float64 {
     return vs;
 }
 
+// This one is confusing: values contains the list of values in the event, for scrolling it contains a value for each axis that are being scrolled.
+// The masks array contains integer values, bit N in an integer is set if the axis has a corresponding value in the values array. The axis is identified by `number`.
+// Because number is a u16, one u32 is not enough to hold all the potential axes so we have an array of masks, not just one.
+// To index the value array, we count the number of masks that are set before `number`
 get_valuator_value :: inline (number: u16, values: []xcb_input_fp3232_t, masks: []u32) -> bool, xcb_input_fp3232_t {
-    id := cast(u16)1 << number;
-    idx := (id & 0xffe0) >> 6;
-    if idx >= xx masks.count {
-        log_error("VALUATOR_ERR: number=% idx=% values=% masks=%", number, idx, values, masks);
+    id := cast(u16, 1) << number;
+    mask_idx := (id & 0xffe0) >> 6;
+    if mask_idx >= xx masks.count {
+        log_error("VALUATOR_ERR: number=% mask_idx=% values=% masks=%", number, mask_idx, values, masks);
         return false, .{};
     }
-    if number == INVALID_VALUATOR || !(masks[(id & 0xffe0) >> 6] & (id & 0x001f)) return false, .{};
-
-    pval := values.data;
-    id = 1;
-    for 0..cast(s32) number - 1 {
-        if masks[(id & 0xffe0) >> 6] & (id & 0x001f) {
-            pval += 1;
-            assert(pval < values.data + values.count);
-        }
-        id = id << it;
+    if number == INVALID_VALUATOR || !(masks[mask_idx] & (id & 0x001f)) {
+        return false, .{};
     }
-    return true, pval.*;
+
+    if number == 0 { // Avoid underflow because of number - 1 below
+        return true, values[0];
+    }
+
+    value_idx := 0;
+    for 0..number - 1 {
+        id := cast(u16, 1) << it;
+        mask_idx := (id & 0xffe0) >> 6;
+
+        if masks[mask_idx] & (id & 0x001f) {
+            value_idx += 1;
+            assert(value_idx < values.count);
+        }
+    }
+    return true, values[value_idx];
 }
 
 INVALID_VALUATOR :: U16_MAX;
@@ -998,7 +1009,7 @@ XCB_Device_Info :: struct {
 }
 
 get_device_info :: (xd: *XCB_Display, device_id: xcb_input_device_id_t) -> *XCB_Device_Info {
-    ret, found := table_find(*xd.devices, device_id);
+    found, ret := table_find(*xd.devices, device_id);
     if found return ret;
 
     ret = null;
@@ -1021,8 +1032,9 @@ get_device_info :: (xd: *XCB_Display, device_id: xcb_input_device_id_t) -> *XCB_
         device_info: XCB_Device_Info;
 
         info := infos_it.data;
-        old_dev:, found = table_find(*xd.devices, info.deviceid);
-        if found {
+
+        ok, old_dev := table_find(*xd.devices, info.deviceid);
+        if ok {
             ret = old_dev;
             continue;
         }
@@ -1148,7 +1160,7 @@ load_cursors :: (xd: *XCB_Display) -> bool {
 }
 
 atom_name :: (xd: *XCB_Display, atom: xcb_atom_t) -> string {
-    name, found := table_find(*xd.atom_names, atom);
+    found, name := table_find(*xd.atom_names, atom);
     if found return name;
 
     xcb_err: *xcb_generic_error_t;

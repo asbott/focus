@@ -22,7 +22,7 @@ tokenize_cpp :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] B
 
         prev_token.* = token;
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+        highlight_token(buffer, token);
     }
 
     return .[];
@@ -45,11 +45,11 @@ get_next_token :: (using tokenizer: *Tokenizer) -> Token {
     // Look at the first char as if it's ASCII
     char := t.*;
 
-    if is_alpha(char) || char == #char "_" {
+    if ascii_is_alpha(char) || char == #char "_" {
         // Parse identifiers which start with an ASCII letter or _
         // We'll look at identifiers which start with UTF8 letters later when we've already checked for more probable possibilities
         parse_identifier(tokenizer, *token);
-    } else if is_digit(char) {
+    } else if ascii_is_digit(char) {
         parse_number_c_like(tokenizer, *token);
     } else if char == {
         case #char ":";  parse_colon                 (tokenizer, *token);
@@ -107,7 +107,7 @@ parse_identifier :: (using tokenizer: *Tokenizer, token: *Token) {
 
     // Maybe it's a keyword
     if identifier_str.count <= MAX_KEYWORD_LENGTH {
-        kw_token, ok := table_find(*KEYWORD_MAP, identifier_str);
+        ok, kw_token := table_find(*KEYWORD_MAP, identifier_str);
         if ok { token.type = kw_token.type; token.keyword = kw_token.keyword; return; }
     }
 }
@@ -154,7 +154,7 @@ parse_minus :: (using tokenizer: *Tokenizer, token: *Token) {
             token.operation = .minus_minus;
             t += 1;
         case;
-            if is_digit(t.*) parse_number_c_like(tokenizer, token);
+            if ascii_is_digit(t.*) parse_number_c_like(tokenizer, token);
     }
 }
 
@@ -249,16 +249,15 @@ parse_directive :: (using tokenizer: *Tokenizer, token: *Token) {
 
     t += 1;
     eat_white_space(tokenizer);  // there may be spaces between the # and the name
-    if t < max_t && !is_alpha(<<t) return;
+    if t < max_t && !ascii_is_alpha(<<t) return;
 
     directive_str := read_identifier_string(tokenizer);
 
-    while t < max_t && is_alnum(t.*) t += 1;
-    if t >= max_t return;
+    while t < max_t && ascii_is_alnum(t.*) t += 1;
 
     // Check if it's one of the existing directives
     if directive_str.count > MAX_DIRECTIVE_LENGTH return;
-    directive, ok := table_find(*DIRECTIVES_MAP, directive_str);
+    ok, directive := table_find(*DIRECTIVES_MAP, directive_str);
     if ok {
         token.type = .directive;
         token.directive = directive;
@@ -399,8 +398,7 @@ parse_caret :: (using tokenizer: *Tokenizer, token: *Token) {
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     union {
         keyword:        Keyword;

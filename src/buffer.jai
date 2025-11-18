@@ -23,8 +23,10 @@ refresh_open_buffers :: () {
         if !buffer.readonly then buffer.modified = buffer.meow_hash != calculate_hash(to_view(buffer.bytes));
         if !buffer.modified then buffer.modified_on_disk = false;  // we've verified that the contents matches that on disk
 
-        finder.need_to_refresh_results = true;
-        open_file_dialog.should_refresh_entries = true;
+        if !buffer.internal && !buffer.binary {
+            finder.need_to_refresh_results = true;
+            open_file_dialog.should_refresh_entries = true;
+        }
     }
 }
 
@@ -413,38 +415,40 @@ rescan_for_lines :: (using buffer: *Buffer) {
 
     s := to_string(bytes);
 
-    // NOTE: this implementation is slightly faster on my machine, but really not by much - need to test on other machines
-    if check_feature(cpu_info.feature_leaves, x86_Feature_Flag.AVX2) {
-        // Scan by 16 bytes at a time
-        lf := 0xA; // '\n'
-        #asm AVX2 {
-            movq lf_source:, lf;
-            pbroadcastb.x line_feeds:, lf_source;
-        }
-        data := s.data;
-        count := s.count;
-        while count >= 16 {
-            mask:  u32 = ---;
-            #asm {
-                movdqu      batch:, [data];
-                pcmpeqb.x   batch, line_feeds;
-                pmovmskb.x  mask, batch;
+    #if CPU == .X64 {
+        // NOTE: this implementation is slightly faster on my machine, but really not by much - need to test on other machines
+        if check_feature(cpu_info.feature_leaves, x86_Feature_Flag.AVX2) {
+            // Scan by 16 bytes at a time
+            lf := 0xA; // '\n'
+            #asm AVX2 {
+                movq lf_source:, lf;
+                pbroadcastb.x line_feeds:, lf_source;
             }
-            shift := 0;
-            bit_id: u32 = ---;
-            while mask {
+            data := s.data;
+            count := s.count;
+            while count >= 16 {
+                mask:  u32 = ---;
                 #asm {
-                    bsf.d bit_id, mask;
+                    movdqu      batch:, [data];
+                    pcmpeqb.x   batch, line_feeds;
+                    pmovmskb.x  mask, batch;
                 }
-                mask >>= (bit_id + 1);
-                shift += bit_id + 1;
-                add(*line_starts, cast,no_check(s32)(data - bytes.data + shift));
+                shift := 0;
+                bit_id: u32 = ---;
+                while mask {
+                    #asm {
+                        bsf.d bit_id, mask;
+                    }
+                    mask >>= (bit_id + 1);
+                    shift += bit_id + 1;
+                    add(*line_starts, cast,no_check(s32)(data - bytes.data + shift));
+                }
+                count -= 16;
+                data  += 16;
             }
-            count -= 16;
-            data  += 16;
+            s.data = data;
+            s.count = count;
         }
-        s.data = data;
-        s.count = count;
     }
 
     processed_with_simd := s.data - bytes.data;
@@ -590,14 +594,17 @@ tokenize_for_indentation :: (buffer: *Buffer) -> [] Indentation_Token /* temp */
         case .Cpp;          return tokenize_c_like_lang_for_indentation(buffer, get_next_cpp_token);
         case .Css;          return tokenize_c_like_lang_for_indentation(buffer, get_next_css_token);
         case .D;            return tokenize_c_like_lang_for_indentation(buffer, get_next_d_token);
+        case .Dart;         return tokenize_dart_for_indentation(buffer);
         case .Java;         return tokenize_c_like_lang_for_indentation(buffer, get_next_java_token);
         case .Js;           return tokenize_js_for_indentation(buffer);
         case .Json;         return tokenize_c_like_lang_for_indentation(buffer, get_next_json_token);
+        case .Powershell;   return tokenize_powershell_for_indentation(buffer);
         case .Glsl;         return tokenize_c_like_lang_for_indentation(buffer, get_next_glsl_token);
         case .Hlsl;         return tokenize_c_like_lang_for_indentation(buffer, get_next_hlsl_token);
         case .Swift;        return tokenize_swift_for_indentation(buffer);
         case .Zig;          return tokenize_c_like_lang_for_indentation(buffer, get_next_zig_token);
         case .Html;         return tokenize_xml_for_indentation(buffer);
+        case .Vue;          return tokenize_xml_for_indentation(buffer);
         case .Xml;          return tokenize_xml_for_indentation(buffer);
         case .Lua;          return tokenize_lua_for_indentation(buffer);
         case .Odin;         return tokenize_odin_for_indentation(buffer);
@@ -784,7 +791,7 @@ save_buffer_to_file :: (buffer: *Buffer, buffer_id: s64, file_path: string) {
 
         lock(*open_buffers_lock);
         {
-            existing_buffer_id, found_existing := table_find(*buffers_table, file_path);
+            found_existing, existing_buffer_id := table_find(*buffers_table, file_path);
             if found_existing {
                 assert(buffer_id != existing_buffer_id, "Buffer without a file was added to the buffer table. This is a bug.");
                 // The user chose to save the buffer into an existing file. OK.
@@ -796,7 +803,7 @@ save_buffer_to_file :: (buffer: *Buffer, buffer_id: s64, file_path: string) {
                 existing_buffer.modified = false;
                 existing_buffer.modified_on_disk = false;
 
-                reroute_active_editor(existing_buffer_id, buffer_id);
+                reroute_editors_to_new_buffer(existing_buffer_id, buffer_id);
             }
 
             table_add(*buffers_table, copy_string(file_path), buffer_id);
@@ -806,18 +813,21 @@ save_buffer_to_file :: (buffer: *Buffer, buffer_id: s64, file_path: string) {
         save_buffer(buffer, buffer_id);
     } else {
         // We're "saving as", in which case we want to create a new buffer and also keep the current buffer
-        success := write_entire_file(file_path, to_string(buffer.bytes));
+        buffer_contents := get_buffer_contents_for_writing(buffer);
+        success := write_entire_file(file_path, buffer_contents);
+
         if !success {
             buffer.error_when_saving = true;
             log_error("Couldn't write to file %", file_path);
             return;
         }
+
         refresh_buffer_from_disk_by_path(file_path);
         new_id, created := find_or_create_buffer(file_path);
         assert(!created, "Buffer is unexpectedly created when it was supposed to already exist");
         if new_id < 0 return;  // logged elsewhere
 
-        reroute_active_editor(buffer_id, new_id);
+        reroute_editors_to_new_buffer(buffer_id, new_id);
         update_window_title(open_editors[get_active_editor_id()].buffer_id);
         update_most_recent_buffers(new_id);
     }
@@ -851,7 +861,10 @@ save_buffer :: (using buffer: *Buffer, buffer_id: s64) {
     }
     if buffer_settings.insert_final_newline_on_save then insert_final_newline(buffer);  // important to do it after stripping
 
-    success := write_entire_file(file.full_path, to_string(bytes));
+    buffer_contents, is_crlf := get_buffer_contents_for_writing(buffer);
+    buffer.crlf = is_crlf;
+    success := write_entire_file(file.full_path, buffer_contents);
+
     if success {
         modified = false;
         modified_on_disk = false;
@@ -860,29 +873,28 @@ save_buffer :: (using buffer: *Buffer, buffer_id: s64) {
         meow_hash = calculate_hash(to_view(bytes));
 
         error_when_saving = false;
-        crlf = false;
     } else {
         error_when_saving = true;
     }
+
     remember_last_mod_info(buffer);
     active_editor_id := get_active_editor_id();
     if active_editor_id >= 0 && active_editor_id < open_editors.count then update_window_title(open_editors[active_editor_id].buffer_id);
 
     // The config will attempt to refresh again on a file watcher message, but it should exit early because it will be unchanged.
     // We're doing it here because this way we always refresh right away, without waiting for a message to wake us up
-    if is_our_config_file(buffer.file.full_path) refresh_config(buffer.file.full_path);
-    if is_current_theme(buffer.file.full_path) refresh_current_theme();
+    maybe_defer_refresh_config_or_theme(buffer.file.full_path);
 
     redraw_requested = true;
 }
 
-reroute_active_editor :: (old_buffer_id: s64, new_buffer_id: s64) {
+reroute_editors_to_new_buffer :: (old_buffer_id: s64, new_buffer_id: s64) {
     old_buffer := *open_buffers[old_buffer_id];
     new_buffer := *open_buffers[new_buffer_id];
 
-    editor := *open_editors[get_active_editor_id()];
+    for * editor : open_editors {
+        if editor.buffer_id != old_buffer_id  continue;
 
-    if editor.buffer_id == old_buffer_id {
         editor.buffer_id = new_buffer_id;
         editor.scroll_to_cursor = .yes;
         organise_cursors(editor);
@@ -891,7 +903,6 @@ reroute_active_editor :: (old_buffer_id: s64, new_buffer_id: s64) {
         old_buffer.num_editors_open -= 1;
         new_buffer.num_editors_open += 1;
     }
-
 }
 
 delete_buffer_from_disk :: (using buffer: *Buffer) -> deleted: bool {
@@ -1096,6 +1107,18 @@ indentation_convert_to_spaces_for_buffer :: (buffer: *Buffer, buffer_id: s64) {
     buffer.indentation.size = cast(u8) buffer_settings.tab_size;
 }
 
+action_convert_buffer_to_crlf :: (buffer: *Buffer) {
+    if buffer.crlf return;
+    buffer.crlf = true;
+    buffer.modified = true;
+}
+
+action_convert_buffer_to_lf :: (buffer: *Buffer) {
+    if !buffer.crlf return;
+    buffer.crlf = false;
+    buffer.modified = true;
+}
+
 insert_final_newline :: (using buffer: *Buffer) {
     if !bytes return;
     if bytes[bytes.count - 1] == #char "\n" return;  // already there
@@ -1162,6 +1185,39 @@ _get_line_as_string :: (buffer: Buffer, line_starts: [] s32, line_num: s32) -> s
     return result;
 }
 
+get_buffer_contents_for_writing :: (buffer: Buffer) -> string /* temp */, is_crlf: bool {
+    buffer_contents: string;
+    is_crlf: bool;
+
+    buffer_settings := get_settings(buffer);
+
+    if (buffer.crlf && buffer_settings.line_endings == .preserve) || buffer_settings.line_endings == .crlf {
+        b: String_Builder;
+        b.allocator = temp;
+
+        for 0 .. buffer.line_starts.count-1 {
+            line := get_real_line_as_string(buffer, it);
+            if !line continue;
+
+            if line.data[line.count - 1] != #char "\n" {
+                append(*b, line);
+            } else {
+                line.count -= 1;
+                append(*b, line);
+                append(*b, "\r\n");
+            }
+        }
+
+        buffer_contents = builder_to_string(*b,, temp);
+        is_crlf = true;
+    } else {
+        buffer_contents = to_string(buffer.bytes);
+        is_crlf = false;
+    }
+
+    return buffer_contents, is_crlf;
+}
+
 create_an_empty_buffer :: () -> buffer_id: s64, created: bool {
     // Create a new buffer
     lock(*open_buffers_lock);
@@ -1171,6 +1227,10 @@ create_an_empty_buffer :: () -> buffer_id: s64, created: bool {
     buffer := bucket_array_add(*open_buffers);
     init_buffer(buffer);
     buffer.has_file = false;
+
+    if config.settings.line_endings == .crlf {
+        buffer.crlf = true;
+    }
 
     // These values will be overwritten later if `detect_intentation` is true
     buffer.indentation.type = config.settings.indent_using;
@@ -1188,7 +1248,7 @@ find_or_create_buffer :: (path: string, tokenize := true) -> buffer_id: s64, cre
     }
     lock(*open_buffers_lock);
 
-    buffer_id, found_buffer := table_find(*buffers_table, path);
+    found_buffer, buffer_id := table_find(*buffers_table, path);
     buffer: *Buffer = ---;
 
     if !found_buffer {
@@ -1253,7 +1313,7 @@ find_buffer_id_by_path :: (path: string) -> buffer_id: s64 {
     lock(*open_buffers_lock);
     defer unlock(*open_buffers_lock);
 
-    buffer_id, found_buffer := table_find(*buffers_table, path);
+    found_buffer, buffer_id := table_find(*buffers_table, path);
     if found_buffer return buffer_id;
 
     return -1;
@@ -1383,7 +1443,7 @@ detect_and_set_indentation :: (using buffer: *Buffer) -> enum { success; error; 
     // However, we don't want to do this if there's one 2-space indent and two hundred 4-space indents because it's likely that the 2 space indent is just an exception.
     DIVISOR_RATIO :: 0.1;  // example: if the number of 2-space indents divided by the number of 4 space indents is greater than this ratio, we compress to 2 spaces
     for #v2 < * smaller_indent, i : non_zero_indents {
-        // if smaller_indent.level <= 1 continue;  // if we allowed 1 here it would compress everything
+        if smaller_indent.level <= 1 continue;  // if we allowed 1 here it would compress everything
 
         for j : i+1 .. non_zero_indents.count-1 {
             larger_indent := *non_zero_indents[j];
@@ -1417,13 +1477,10 @@ refresh_buffer_from_disk_by_path :: (path: string) {
     is_dir, is_dir_success := is_directory(path);
     if is_dir || !is_dir_success || !file_exists(path) {
         // Either this is a dir, or a deleted dir, or a deleted file.
-        // So many checks are needed because if a dir gets deleted then
-        // it will get to this point and could get itself a buffer
-        // if we didn't do it.
 
         // Find if there's an existing buffer already and mark it as deleted
         lock(*open_buffers_lock);
-        buffer_id, found_buffer := table_find(*buffers_table, path);
+        found_buffer, buffer_id := table_find(*buffers_table, path);
         if found_buffer {
             open_buffers[buffer_id].deleted = true;
             finder.need_to_refresh_results = true;
@@ -1434,8 +1491,7 @@ refresh_buffer_from_disk_by_path :: (path: string) {
         return;
     }
 
-    if is_our_config_file(path) refresh_config(path);
-    if is_current_theme(path)   refresh_current_theme();
+    maybe_defer_refresh_config_or_theme(path);
 
     buffer_id, created := find_or_create_buffer(path);
     if created return;
@@ -1462,7 +1518,7 @@ refresh_buffer_from_disk_by_path :: (path: string) {
     finder.need_to_refresh_results = true;
 }
 
-reload_from_disk :: (buffer_id: s64, force := false, show_user_messages := false) {
+reload_from_disk :: (buffer_id: s64, force := false, show_user_messages := false) -> success: bool {
     context.current_buffer_id = buffer_id;
     defer context.current_buffer_id = -1;
 
@@ -1472,25 +1528,24 @@ reload_from_disk :: (buffer_id: s64, force := false, show_user_messages := false
     path := buffer.file.full_path;
 
     file_contents_str, success := read_entire_file(path);
-    if is_file_binary(file_contents_str) {
-        free(file_contents_str);
-        file_contents_str = sprint("Couldn't display file '%' because it's either binary or contains non-UTF8 characters.", path);
-        buffer.readonly = true;
-    }
-
     if !success {
         if show_user_messages {
             add_user_error("Couldn't read file:\n%", path);
         } else {
             log_error("Couldn't read file:\n%", path);
         }
-        return;
+        return false;
+    }
+    if is_file_binary(file_contents_str) {
+        free(file_contents_str);
+        file_contents_str = sprint("Couldn't display file '%' because it's either binary or contains non-UTF8 characters.", path);
+        buffer.readonly = true;
     }
     defer free(file_contents_str);
 
     bytes_removed := remove_crlf_in_place(*file_contents_str);
     file_hash := calculate_hash(cast([] u8) file_contents_str);
-    if buffer.meow_hash == file_hash && !force return;
+    if buffer.meow_hash == file_hash && !force return true;
 
     buffer.crlf = bytes_removed > 0;
     buffer.meow_hash = file_hash;
@@ -1509,13 +1564,14 @@ reload_from_disk :: (buffer_id: s64, force := false, show_user_messages := false
     }
 
     refresh_all_editors_for_buffer(buffer_id);
+    return true;
 }
 
 maybe_mark_buffer_as_deleted :: (path: string) {
     lock(*open_buffers_lock);
     defer unlock(*open_buffers_lock);
 
-    buffer_id, found_buffer := table_find(*buffers_table, path);
+    found_buffer, buffer_id := table_find(*buffers_table, path);
     if !found_buffer return;  // no buffer for this path
     maybe_mark_buffer_as_deleted(buffer_id);
 }
@@ -1641,6 +1697,8 @@ get_tokenize_function :: (lang: Buffer.Lang) -> Tokenize_Function {
         case .Css;                  return tokenize_css;
         case .CSharp;               return tokenize_csharp;
         case .D;                    return tokenize_d;
+        case .Dart;                 return tokenize_dart;
+        case .Diff;                 return tokenize_diff;
         case .Glsl;                 return tokenize_glsl;
         case .Hlsl;                 return tokenize_hlsl;
         case .Golang;               return tokenize_golang;
@@ -1649,12 +1707,14 @@ get_tokenize_function :: (lang: Buffer.Lang) -> Tokenize_Function {
         case .Json;                 return tokenize_json;
         case .Lua;                  return tokenize_lua;
         case .Odin;                 return tokenize_odin;
+        case .Powershell;           return tokenize_powershell;
         case .Python;               return tokenize_python;
         case .RenPy;                return tokenize_renpy;
         case .Rust;                 return tokenize_rust;
         case .Shell;                return tokenize_shell;
         case .Html;                 return tokenize_xml;
         case .Xml;                  return tokenize_xml;
+        case .Vue;                  return tokenize_xml;
         case .Todo;                 return tokenize_todo;
         case .Yang;                 return tokenize_yang;
         case .Zig;                  return tokenize_zig;
@@ -2007,6 +2067,8 @@ Buffer :: struct {
         Css;
         CSharp;
         D;
+        Dart;
+        Diff;
         Glsl;
         Hlsl;
         Golang;
@@ -2015,11 +2077,13 @@ Buffer :: struct {
         Json;
         Lua;
         Odin;
+        Powershell;
         Python;
         RenPy;
         Rust;
         Xml;
         Html;
+        Vue;
         Todo;
         Yang;
         Zig;
@@ -2082,6 +2146,9 @@ Buffer_Region :: struct {
         scope_module;
 
         heredoc;
+
+        addition;
+        deletion;
     }
 }
 

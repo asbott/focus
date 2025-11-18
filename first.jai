@@ -1,3 +1,6 @@
+MIN_COMPILER_VERSION :: Version_Info.{ major = 0, minor = 2, micro = 16 };
+MAX_COMPILER_VERSION :: Version_Info.{ major = 0, minor = 2, micro = 99 };
+
 VERSION      :: #run -> string {
     result, revision := run_command("git", "rev-parse", "--short", "HEAD", capture_and_return_output = true);
     if revision return sprint("0.3.8-%", trim(revision));
@@ -15,6 +18,8 @@ RELEASE_DATE :: #run -> string {
 #run,stallable build();
 
 build :: () {
+    check_compiler_version();
+
     options := get_build_options();
     options.minimum_os_version = .{10, 13};
     options.temporary_storage_size = 1048576;  // 1 MB per thread
@@ -35,16 +40,23 @@ build :: () {
     build_dir := "build_debug";
     options.output_executable_name = "focus";
 
+    success:, plugins_to_create:, args = parse_plugin_arguments(args);
+    if !success {
+        compiler_report("Failed to parse plugin arguments.\n");
+        exit(1);
+    }
+
     for arg: args {
         if arg == {
           case "release";
             optimized = true;
             build_dir = "build_release";
-            set_optimization(*options, .VERY_OPTIMIZED);
+            set_optimization(*options, .OPTIMIZED);
             options.llvm_options.enable_split_modules = false;
             options.array_bounds_check = .ON;
             options.null_pointer_check = .ON;
             options.arithmetic_overflow_check = .OFF;
+            options.stack_trace = false;
           case "debug";
           case "no_output";
             options.output_type = .NO_OUTPUT;
@@ -77,7 +89,18 @@ build :: () {
         }
     }
 
-    compiler_begin_intercept(w);
+    success = init_plugins(plugins_to_create, *plugins, w);
+    if !success {
+        compiler_report("A plugin init() failed. Exiting.\n");
+        exit(1);
+    }
+
+    intercept_flags: Intercept_Flags;
+    for plugins if it.before_intercept it.before_intercept(it, *intercept_flags);
+
+    compiler_begin_intercept(w, intercept_flags);
+
+    for plugins if it.add_source it.add_source(it);
 
     add_build_file("src/main.jai", w);
 
@@ -100,6 +123,9 @@ build :: () {
     while true {
         message := compiler_wait_for_message();
         if message.workspace != w continue;
+
+        for plugins if it.message it.message(it, message);
+
         if message.kind == {
             case .TYPECHECKED;
                 if options.output_type != .NO_OUTPUT {
@@ -139,6 +165,9 @@ build :: () {
 
     compiler_end_intercept(w);
 
+    for plugins if it.finish   it.finish  (it);
+    for plugins if it.shutdown it.shutdown(it);
+
     // Don't try to set icon or manifest if we failed compilation
     if failed then return;
 
@@ -146,7 +175,7 @@ build :: () {
         exe_path := tprint("%/%.exe", build_dir, options.output_executable_name);
 
         ico_data := create_ico_file_from_bitmap_filename("images/focus.png");
-        success := set_icon_by_data(exe_path, ico_data);
+        success = set_icon_by_data(exe_path, ico_data);
         if !success {
             log_error("ERROR: Couldn't set icon for '%'\n", exe_path);
         }
@@ -173,13 +202,38 @@ build :: () {
         run_command("ln", "-s", "/Applications", DMG_DIR);
 
         // Generate a .DMG using Disk Utility
-        run_command("hdiutil", "create", "-volname", tprint("Focus %", VERSION), "-srcfolder", DMG_DIR, "-ov", "-format", "UDZO", tprint("Focus-%-Intel.dmg", VERSION));
+        file_name := ifx CPU == .X64 tprint("Focus-%-Intel.dmg", VERSION) else tprint("Focus-%-Apple.dmg", VERSION);
+        run_command("hdiutil", "create", "-volname", tprint("Focus %", VERSION), "-srcfolder", DMG_DIR, "-ov", "-format", "UDZO", file_name);
 
         // Remove our temporary directory when we're done
         run_command("rm", "-r", DMG_DIR);
 
         #import "MacOS_Bundler";
         #import "File";
+    }
+}
+
+check_compiler_version :: () {
+    version_info: Version_Info;
+    version_str := compiler_get_version_info(*version_info);
+
+    min_version_str := tprint("%.%.%", MIN_COMPILER_VERSION.major, MIN_COMPILER_VERSION.minor, MIN_COMPILER_VERSION.micro);
+    max_version_str := tprint("%.%.%", MAX_COMPILER_VERSION.major, MAX_COMPILER_VERSION.minor, MAX_COMPILER_VERSION.micro);
+
+    if version_info.major < MIN_COMPILER_VERSION.major ||
+       version_info.minor < MIN_COMPILER_VERSION.minor ||
+       version_info.micro < MIN_COMPILER_VERSION.micro
+    {
+        error := tprint("Compiler version '%' is below the minimum required version '%'", version_str, min_version_str);
+        compiler_report(error);
+    }
+
+    if version_info.major > MAX_COMPILER_VERSION.major ||
+       version_info.minor > MAX_COMPILER_VERSION.minor ||
+       version_info.micro > MAX_COMPILER_VERSION.micro
+    {
+        error := tprint("Compiler version '%' is above the maximum supported version '%'", version_str, max_version_str);
+        compiler_report(error);
     }
 }
 
@@ -279,9 +333,12 @@ settings_info: struct {
     }
 }
 
+plugins: [..] *Metaprogram_Plugin;
+
 #import "Compiler";
 #import "Basic";
 #import "File";
+#import "Metaprogram_Plugins";
 #import "Process";
 #import "String";
 
@@ -322,7 +379,7 @@ settings_info: struct {
         for m.system_libraries
             array_add(*link_command, crt_lib_to_static(it));
         for m.user_libraries {
-            if ends_with(it, "freetype.lib")  array_add(*link_command, "modules/freetype/windows/freetype.lib");
+            if ends_with(it, "freetype.lib")  array_add(*link_command, "modules/freetype-bin/windows/freetype.lib");
             else  array_add(*link_command, it);
         }
 

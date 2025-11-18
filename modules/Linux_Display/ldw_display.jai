@@ -549,9 +549,6 @@ wl_window_handle_resize :: (w: *Wayland_Window, width: s32, height: s32) {
     if w.base.gl.egl.native
         wl_egl_window_resize(w.base.gl.egl.native, w.buffer_width, w.buffer_height, 0, 0);
 
-    wl_surface.damage(w.handle, 0, 0, w.window_width, w.window_height);
-    wl_surface.commit(w.handle);
-
     Input.add_resize_record(xx w, xx w.buffer_width, xx w.buffer_height);
 }
 
@@ -592,7 +589,7 @@ wl_create_window :: (display: *Display, window: *Window, width: int, height: int
     w.window_width = xx width;
     w.window_height = xx height;
 
-    cursor, found := table_find(*d.cursors, "default");
+    found, cursor := table_find(*d.cursors, "default");
     if !found {
         for d.cursors {
             cursor = it;
@@ -669,7 +666,7 @@ wl_set_cursor_from_theme :: (window: *Window, name: string) {
     wl_check_usage(null, window);
 
     w: *Wayland_Window = window;
-    cursor, found := table_find(*w.display.cursors, name);
+    found, cursor := table_find(*w.display.cursors, name);
     if found {
         w.cursor = cursor;
         refresh_cursor(w);

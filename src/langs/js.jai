@@ -18,7 +18,7 @@ tokenize_js :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Bu
 
         last_token = token;
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+        highlight_token(buffer, token);
     }
 
     return tokenizer.regions;
@@ -99,9 +99,9 @@ get_next_token :: (using tokenizer: *Js_Tokenizer) -> Token {
     // Look at the first char as if it's ASCII (if it isn't, this is just a text line)
     char := << t;
 
-    if is_alpha(char) || char == #char "_" {
+    if ascii_is_alpha(char) || char == #char "_" {
         parse_identifier(tokenizer, *token);
-    } else if is_digit(char) {
+    } else if ascii_is_digit(char) {
         parse_number(tokenizer, *token);
     } else if char == {
         case #char ":";  parse_colon                       (tokenizer, *token);
@@ -154,7 +154,7 @@ parse_identifier :: (using tokenizer: *Js_Tokenizer, token: *Token) {
 
     // Maybe it's a keyword
     if identifier_str.count <= MAX_KEYWORD_LENGTH {
-        kw_token, ok := table_find(*KEYWORD_MAP, identifier_str);
+        ok, kw_token := table_find(*KEYWORD_MAP, identifier_str);
         if ok { token.type = kw_token.type; token.keyword = kw_token.keyword; return; }
     }
 }
@@ -167,10 +167,10 @@ parse_number :: (using tokenizer: *Js_Tokenizer, token: *Token) {
     t += 1;
     if t >= max_t return;
 
-    if is_digit(t.*) || t.* == #char "." {
+    if ascii_is_digit(t.*) || t.* == #char "." {
         // Decimal
         seen_decimal_point := false;
-        while t < max_t && (is_digit(t.*) || t.* == #char ".") {
+        while t < max_t && (ascii_is_digit(t.*) || t.* == #char ".") {
             if t.* == #char "." {
                 if seen_decimal_point break;
                 seen_decimal_point = true;
@@ -189,7 +189,7 @@ parse_number :: (using tokenizer: *Js_Tokenizer, token: *Token) {
               if t >= max_t return;
             }
 
-            while t < max_t && is_digit(t.*) {
+            while t < max_t && ascii_is_digit(t.*) {
                 t += 1;
             }
             if t >= max_t return;
@@ -246,7 +246,7 @@ parse_minus :: (using tokenizer: *Js_Tokenizer, token: *Token) {
             token.operation = .minus_minus;
             t += 1;
         case;
-            if is_digit(<< t) parse_number(tokenizer, token);
+            if ascii_is_digit(<< t) parse_number(tokenizer, token);
     }
 }
 
@@ -492,7 +492,7 @@ parse_private_identifier :: (using tokenizer: *Js_Tokenizer, token: *Token) {
     token.type = .identifier;
 
     t += 1;
-    if t < max_t && !is_alpha(<<t) && <<t != #char "_" return;
+    if t < max_t && !ascii_is_alpha(<<t) && <<t != #char "_" return;
 
     identifier_str := read_utf8_identifier_string(tokenizer);
 }
@@ -501,7 +501,7 @@ parse_decorator :: (using tokenizer: *Js_Tokenizer, token: *Token) {
     token.type = .identifier;
 
     t += 1;
-    if t < max_t && !is_alpha(<<t) && <<t != #char "_" return;
+    if t < max_t && !ascii_is_alpha(<<t) && <<t != #char "_" return;
 
     identifier_str := read_utf8_identifier_string(tokenizer);
 }
@@ -514,8 +514,7 @@ Js_Tokenizer :: struct {
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     union {
         keyword:                Keyword;
@@ -597,4 +596,3 @@ MAX_KEYWORD_LENGTH :: #run -> s32 {
     for VALUE_KEYWORDS { if it.count > result then result = it.count; }
     return xx result;
 }
-

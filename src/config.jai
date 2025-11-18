@@ -1,6 +1,6 @@
 // Increment this if your PR adds a setting, color or default keybinding (and amend the relevant array
-// in config_migrator.jai).  You don't need to increase it for each such change; once per PR is fine.
-CURRENT_CONFIG_VERSION :: 18;
+// in config_migrator.jai).  You don't need to increase it for each such change; once per PR is best.
+CURRENT_CONFIG_VERSION :: 25;
 
 load_global_config :: (fallback_to_default_on_failure := false, force := false) -> success: bool, changed: bool, there_were_warnings: bool {
     config_path := tprint("%/global.focus-config", config_dir);
@@ -73,6 +73,12 @@ load_project_config :: (file_path: string, force := false) -> success: bool, cha
     }
 }
 
+maybe_defer_refresh_config_or_theme :: (path: string) {
+    if is_our_config_file(path) || is_current_theme(path) {
+        defer_action_refresh_config_or_theme(path);
+    }
+}
+
 refresh_config :: (path: string) {
     // Deep copy old workspace members and allow/ignore lists (they will be freed by the load config function otherwise)
     old_workspace_members: [..] string;
@@ -87,11 +93,16 @@ refresh_config :: (path: string) {
     old_ignore_list.allocator = temp;
     for config.workspace.ignore array_add(*old_ignore_list, copy_temporary_string(it));
 
-    // Remember old file associations
     old_file_associations: [..] File_Association;
     old_file_associations.allocator = temp;
     for config.workspace.file_associations array_add(*old_file_associations, .{ copy_temporary_string(it.wildcard), it.lang });
 
+    old_comment_highlight_words1 := copy_temporary_string(config.settings.comment_highlight_words1);
+    old_comment_highlight_words2 := copy_temporary_string(config.settings.comment_highlight_words2);
+    old_comment_highlight_words3 := copy_temporary_string(config.settings.comment_highlight_words3);
+    old_comment_highlight_words4 := copy_temporary_string(config.settings.comment_highlight_words4);
+
+    // Load new config
     if platform_path_equals(path, global_config.path) {
         success, changed, there_were_warnings := load_global_config();
         if success && changed && !there_were_warnings {
@@ -175,15 +186,26 @@ refresh_config :: (path: string) {
             if lang != buffer.lang {
                 buffer.lang = lang;
                 recalculate_settings(buffer);
-                retokenize(buffer);
+                buffer.needs_tokenizing = true;
             }
         }
         add_success_message("File associations have been refreshed", dismiss_in_seconds = 3);
     }
 
+    if old_comment_highlight_words1 != config.settings.comment_highlight_words1 ||
+       old_comment_highlight_words2 != config.settings.comment_highlight_words2 ||
+       old_comment_highlight_words3 != config.settings.comment_highlight_words3 ||
+       old_comment_highlight_words4 != config.settings.comment_highlight_words4
+    {
+        for * buffer : open_buffers {
+            buffer.needs_tokenizing = true;
+        }
+    }
+
     // If indentation rules changed, refresh them for all open editors
     for editor : open_editors {
         buffer := *open_buffers[editor.buffer_id];
+
         maybe_detect_and_set_indentation(buffer);
     }
 
@@ -291,6 +313,14 @@ apply_style :: (parsed: Parsed_Config) {
             add_user_error("Couldn't load font %", parsed.font_ui_bold);
         }
     }
+    if parsed.font_ui_bold_italic {
+        loaded_font, success := load_font_by_name(parsed.font_ui_bold_italic, .ui_bold_italic);
+        if success {
+            loaded_fonts.ui_bold_italic = loaded_font;
+        } else {
+            add_user_error("Couldn't load font %", parsed.font_ui_bold_italic);
+        }
+    }
     if parsed.font_size > 0 {
         font_main_size = parsed.font_size;
         default_font_main_size = font_main_size;
@@ -334,6 +364,8 @@ get_current_project_dir :: () -> string {
 #scope_file
 
 load_config :: (path: string, existing: *Loaded_Config, force := false) -> Loaded_Config, changed := true {
+    assert(workspace_scan_complete);  // we never want to load config while we're scanning the workspace
+
     loaded_config: Loaded_Config;
     loaded_config.memory_pool = New(Flat_Pool);
 
@@ -498,6 +530,8 @@ apply_config :: () {
     Clamp(*config.settings.scrollbar_fade_in_sensitivity,       0.0, 100.0);
     Clamp(*config.settings.scrollbar_fade_out_delay_seconds,    0.0, 1000.0);
 
+    Clamp(*config.settings.cursor_position_after_jump,  0.0,  1.0);
+
     if config.settings.window_width  != -1    clamp_and_warn(*config.settings.window_width,  100, 10000, "Window width clamped to %");
     if config.settings.window_height != -1    clamp_and_warn(*config.settings.window_height, 100, 3000,  "Window height clamped to %");
     if config.settings.window_x      != -1000 clamp_and_warn(*config.settings.window_x,     -500, 10000, "Window X clamped to %");
@@ -508,8 +542,11 @@ apply_config :: () {
     build_panel_height_anim.target = build_panel_height;
     build_panel_set_line_wrap(config.settings.build_panel_line_wrap_always_on);
 
+    process_comment_highlight_words();
+
+    if !config.settings.enable_temporary_editors then make_all_editors_permanent();
+
     // NOTE: this is potentially expensive, and apply_config as it's currently set up could be called 3 times
-    // However, we expect to fix it soon
     for * open_buffers  recalculate_settings(it);
 
     // Must do after the validation
@@ -521,15 +558,47 @@ apply_config :: () {
                                                        //       keep pointers to old keymaps when the config is reloaded
 }
 
+
 old_tab_size := 0;  // used to detect when tab size is changed in the config
 
 
-load_font_by_name :: (name: string, kind: enum { main; ui; ui_bold; }) -> Loaded_Font, success: bool {
+process_comment_highlight_words :: () {
+    highlight_words_settings := string.[
+        config.settings.comment_highlight_words1,
+        config.settings.comment_highlight_words2,
+        config.settings.comment_highlight_words3,
+        config.settings.comment_highlight_words4,
+    ];
+    token_types := Token_Type.[
+        .comment_highlight1,
+        .comment_highlight2,
+        .comment_highlight3,
+        .comment_highlight4,
+    ];
+
+    words: [..] Highlight_Word;
+    words.allocator = temp;
+
+    for setting : highlight_words_settings {
+        word_list  := split(setting, ",",, temp);
+        token_type := token_types[it_index];
+        for word_list {
+            word := trim(it);
+            if word then array_add(*words, .{ word, token_type });
+        }
+    }
+
+    free(*config.comment_words_automaton);
+    config.comment_words_automaton = build_aho_corasick_automaton(words);
+}
+
+load_font_by_name :: (name: string, kind: enum { main; ui; ui_bold; ui_bold_italic; }) -> Loaded_Font, success: bool {
     if name == "default" {
-        if kind == {
-            case .main;    return FONT_MAIN,    true;
-            case .ui;      return FONT_UI,      true;
-            case .ui_bold; return FONT_UI_BOLD, true;
+        if #complete kind == {
+            case .main;             return FONT_MAIN,           true;
+            case .ui;               return FONT_UI,             true;
+            case .ui_bold;          return FONT_UI_BOLD,        true;
+            case .ui_bold_italic;   return FONT_UI_BOLD_ITALIC, true;
         }
     }
 
@@ -537,7 +606,7 @@ load_font_by_name :: (name: string, kind: enum { main; ui; ui_bold; }) -> Loaded
 
     font_path := find_font_by_name(name);
     if font_path {
-        cached_font, found := table_find(*font_cache, font_path);
+        found, cached_font := table_find(*font_cache, font_path);
         if found return cached_font, true;
 
         font_data, success := read_entire_file(font_path);
@@ -573,6 +642,8 @@ Config :: struct {
     style:     Style;
     build:     Build_Config;
     linux:     Linux_Config;
+
+    comment_words_automaton: Aho_Corasick_Automaton;
 }
 
 Style :: struct {
@@ -617,7 +688,6 @@ Settings :: struct {
     window_x                                                := -1000;   @v1  // using -1000 because -1 could be a valid value someone might want
     window_y                                                := -1000;   @v1
     cursor_blink_time_in_seconds                            := 5;       @v1
-    disable_file_open_close_animations                      := false;   @v1
     disable_viewport_chasing_cursor_near_the_edge           := false;   @v3
     smooth_scrolling                                        := true;    @v1
     show_paste_effect                                       := true;    @v6
@@ -648,6 +718,16 @@ Settings :: struct {
     status_bar_position                                     := Status_Bar_Position.bottom;                  @v4
     active_pane_border_width                                := 1.0;     @v18
     inactive_pane_dim_overlay_opacity                       := 0.1;     @v18
+    comment_highlight_words1                                := "";      @v19
+    comment_highlight_words2                                := "";      @v19
+    comment_highlight_words3                                := "";      @v19
+    comment_highlight_words4                                := "";      @v19
+    enable_temporary_editors                                := true;    @v23
+    cursor_position_after_jump                              := 0.45;    @v23
+    closing_last_editor_in_pane_should_close_pane           := true;    @v23
+    closing_last_editor_should_exit_program                 := false;   @v23
+    show_pane_numbers                                       := false;   @v23
+    show_tab_characters_in_selection                       := true;    @v24
 
     // TODO
     // load_last_session_on_start:         true
@@ -676,6 +756,7 @@ Settings :: struct {
     status_bar_show_cursors_off_screen                      := true;                                                @v11 @overridable
     status_bar_show_selected_text_length                    := false;                                               @v3  @overridable
     show_scrollbar_marks                                    := true;                                                @v15 @overridable
+    line_endings                                            := Line_Endings.lf;                                     @v25 @overridable
 }
 
 // Generate a struct for the settings that can be overridden
@@ -691,6 +772,7 @@ Settings :: struct {
             case .INTEGER;  type_name = "int";
             case .FLOAT;    type_name = "float";
             case .BOOL;     type_name = "bool";
+            case .STRING;   type_name = "string";
             case .ENUM;     type_name = (cast(*Type_Info_Enum) setting.type).name;
             case;           compiler_report(tprint("Found an overridable setting '%' of an unsupported type", setting.name));
         }
@@ -723,6 +805,7 @@ Status_Bar_Position       :: enum { bottom; top; }
 Strip_Trailing_Whitespace :: enum { except_lines_with_cursor; all; disabled; }
 Color_Preview_Popup       :: enum { enabled; minimized; disabled; }
 Projects_Sorting_Order    :: enum { most_recent_first; alphabetical; alphabetical_no_case; }
+Line_Endings              :: enum { lf; crlf; preserve; }
 
 Font_Anti_Aliasing        :: enum { lcd; normal; }
 #poke_name Simp Font_Anti_Aliasing;

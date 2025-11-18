@@ -16,7 +16,7 @@ tokenize_python :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [
 
         last_token = token;
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+        highlight_token(buffer, token);
     }
 
     return .[];
@@ -38,9 +38,9 @@ get_next_token :: (using tokenizer: *Tokenizer) -> Token {
     // UTF-8 characters elsewhere are a syntax error.
     char := << t;
 
-    if is_alpha(char) || char == #char "_" {
+    if ascii_is_alpha(char) || char == #char "_" {
         parse_identifier(tokenizer, *token);
-    } else if is_digit(char) {
+    } else if ascii_is_digit(char) {
         parse_number(tokenizer, *token);
     } else if char == {
         case #char ":";  parse_colon             (tokenizer, *token);
@@ -92,7 +92,7 @@ parse_identifier :: (using tokenizer: *Tokenizer, token: *Token) {
 
     // Maybe it's a keyword
     if identifier_str.count <= MAX_KEYWORD_LENGTH {
-        kw_token, ok := table_find(*KEYWORD_MAP, identifier_str);
+        ok, kw_token := table_find(*KEYWORD_MAP, identifier_str);
         if ok { token.type = kw_token.type; token.keyword = kw_token.keyword; return; }
     }
 }
@@ -103,11 +103,11 @@ parse_number :: (using tokenizer: *Tokenizer, token: *Token) {
     t += 1;
     if t >= max_t return;
 
-    if is_digit(<< t) || << t == #char "_" {
+    if ascii_is_digit(<< t) || << t == #char "_" {
         // Decimal
         t += 1;
         seen_decimal_point := false;
-        while t < max_t && (is_digit(<< t) || << t == #char "_" || << t == #char ".") {
+        while t < max_t && (ascii_is_digit(<< t) || << t == #char "_" || << t == #char ".") {
             if << t == #char "." {
                 if seen_decimal_point break;
                 seen_decimal_point = true;
@@ -173,7 +173,7 @@ parse_minus :: (using tokenizer: *Tokenizer, token: *Token) {
                 token.operation = .unknown;  // -- is not a valid token
             }
         case;
-            if is_digit(<< t) parse_number(tokenizer, token);
+            if ascii_is_digit(<< t) parse_number(tokenizer, token);
     }
 }
 
@@ -374,8 +374,7 @@ parse_string_literal :: (using tokenizer: *Tokenizer, token: *Token, quote := #c
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     // Additional info to distinguish between keywords/punctuation
     union {
@@ -480,4 +479,3 @@ MAX_KEYWORD_LENGTH :: #run -> s32 {
     for BUILTIN_EXCEPTIONS { if it.count > result then result = it.count; }
     return xx result;
 }
-

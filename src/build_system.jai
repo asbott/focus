@@ -222,7 +222,7 @@ build_system_update :: () {
     }
 }
 
-build_panel_toggle :: () {
+action_toggle_build_panel :: () {
     if build_panel_is_shown {
         hide_build_panel();
     } else {
@@ -271,7 +271,7 @@ build_panel_grab_focus :: () {
     cursors_start_blinking();
 }
 
-build_panel_toggle_focus :: () {
+action_toggle_build_panel_focus :: () {
     if active_global_widget == .build_panel {
         build_panel_lose_focus();
     } else {
@@ -283,12 +283,7 @@ build_panel_toggle_height :: () {
     target := ifx build_panel_is_expanded then config.settings.build_panel_height_percent / 100.0 else 1.0;
     target = clamp(target, 0.1, 1.0);
 
-    if !config.settings.disable_file_open_close_animations {
-        start_animation(*build_panel_height_anim, build_panel_height, target);
-    } else {
-        build_panel_height_anim.target = target;
-        build_panel_height = target;
-    }
+    start_animation(*build_panel_height_anim, build_panel_height, target);
     build_panel_is_expanded = !build_panel_is_expanded;
 }
 
@@ -495,16 +490,22 @@ print_to_output_panel_from_main_thread :: (s: string, mark_as: Buffer_Region.Kin
 }
 
 substitute_variables :: (using work: *Build_Thread_Work) {
-    // Figure out the current file
+    // Figure out the current file and cursor coords
     file := "";
+    cursor_coords: Coords;
+
     active_pane_editor_id := get_active_editor_id();
     if active_pane_editor_id > 0 {
         buffer := open_buffers[open_editors[active_pane_editor_id].buffer_id];
         if buffer.has_file then file = copy_string(buffer.file.full_path);
+
+        editor := *open_editors[active_pane_editor_id];
+        main_cursor := editor.cursors[editor.main_cursor];
+        cursor_coords = offset_to_real_coords(buffer, main_cursor.pos);
     }
 
     file_vars_are_used := false;
-    file_vars := string.["%FILE%", "%FILE_DIR%", "%FILE_NAME%", "%FILE_NAME_NO_EXTENSION%"];
+    file_vars := string.["%FILE%", "%FILE_DIR%", "%FILE_NAME%", "%FILE_NAME_NO_EXTENSION%", "%FILE_LINE%", "%FILE_COLUMN%"];
     for file_vars {
         if contains(build_command, it) || contains(run_command, it) || contains(build_working_dir, it) || contains(run_working_dir, it) {
             file_vars_are_used = true;
@@ -516,26 +517,36 @@ substitute_variables :: (using work: *Build_Thread_Work) {
 
         file_dir, file_name_no_extension, _, file_name := path_decomp(file);
         file_dir = trim_right(file_dir, "/");
+        file_line := sprint("%", cursor_coords.line + 1);
+        file_column := sprint("%", cursor_coords.col + 1);
 
         build_working_dir = replace(build_working_dir, "%FILE%",                   file);
         build_working_dir = replace(build_working_dir, "%FILE_DIR%",               file_dir);
         build_working_dir = replace(build_working_dir, "%FILE_NAME%",              file_name);
         build_working_dir = replace(build_working_dir, "%FILE_NAME_NO_EXTENSION%", file_name_no_extension);
+        build_working_dir = replace(build_working_dir, "%FILE_LINE%",              file_line);
+        build_working_dir = replace(build_working_dir, "%FILE_COLUMN%",            file_column);
 
         run_working_dir   = replace(run_working_dir,   "%FILE%",                   file);
         run_working_dir   = replace(run_working_dir,   "%FILE_DIR%",               file_dir);
         run_working_dir   = replace(run_working_dir,   "%FILE_NAME%",              file_name);
         run_working_dir   = replace(run_working_dir,   "%FILE_NAME_NO_EXTENSION%", file_name_no_extension);
+        run_working_dir   = replace(run_working_dir,   "%FILE_LINE%",              file_line);
+        run_working_dir   = replace(run_working_dir,   "%FILE_COLUMN%",            file_column);
 
         build_command     = replace(build_command,     "%FILE%",                   file);
         build_command     = replace(build_command,     "%FILE_DIR%",               file_dir);
         build_command     = replace(build_command,     "%FILE_NAME%",              file_name);
         build_command     = replace(build_command,     "%FILE_NAME_NO_EXTENSION%", file_name_no_extension);
+        build_command     = replace(build_command,     "%FILE_LINE%",              file_line);
+        build_command     = replace(build_command,     "%FILE_COLUMN%",            file_column);
 
         run_command       = replace(run_command,       "%FILE%",                   file);
         run_command       = replace(run_command,       "%FILE_DIR%",               file_dir);
         run_command       = replace(run_command,       "%FILE_NAME%",              file_name);
         run_command       = replace(run_command,       "%FILE_NAME_NO_EXTENSION%", file_name_no_extension);
+        run_command       = replace(run_command,       "%FILE_LINE%",              file_line);
+        run_command       = replace(run_command,       "%FILE_COLUMN%",            file_column);
     }
 
     // Replace %PROJECT_CONFIG_DIR% if used
@@ -627,10 +638,10 @@ parse_errors_in_failed_command_output :: (error_regex: string, command: Command_
         named_captures := re.map_named_captures(captures, compiled_regex);
         #if DEBUG_BUILD_ERRORS for value, name : named_captures { print("% = %\n", name, value); }
 
-        msg, msg_found := table_find(*named_captures, "msg");
+        msg_found, msg := table_find(*named_captures, "msg");
         if !msg_found continue;
 
-        file, file_found := table_find(*named_captures, "file");
+        file_found, file := table_find(*named_captures, "file");
         if !file_found continue;
 
         build_error := Build_Error.{ file = copy_string(file), message = copy_string(msg) };
@@ -665,21 +676,15 @@ parse_errors_in_failed_command_output :: (error_regex: string, command: Command_
         {
             starts := s64.[xx file.data, xx msg.data, xx line.data, xx col.data];
             ends   := s64.[xx (file.data + file.count), xx (msg.data + msg.count), xx (line.data + line.count), xx (col.data + col.count)];
-
-            max_s64_in_array :: (array: [] s64) -> s64 {
-                max := 0;  // can't go below that
-                for array { if max < it then max = it; }
-                return max;
-            }
-
-            min_s64_in_array :: (array: [] s64) -> s64 {
-                min := S64_MAX;
-                for array { if min > it then min = it; }
-                return min;
-            }
-
-            build_error.error_info_start_offset = xx (min_s64_in_array(starts) - cast(s64) buffer.bytes.data);
-            build_error.error_info_end_offset   = xx (max_s64_in_array(ends)   - cast(s64) buffer.bytes.data);
+            
+            start_offset: s64 = xx buffer.bytes.data;
+            for starts { if it >= start_offset then start_offset = it; }
+            
+            end_offset: s64 = (cast(s64) buffer.bytes.data) + buffer.bytes.count;
+            for ends { if it > start_offset && it < end_offset then end_offset = it; }
+            
+            build_error.error_info_start_offset = xx (start_offset - cast(s64) buffer.bytes.data);
+            build_error.error_info_end_offset   = xx (end_offset   - cast(s64) buffer.bytes.data);
         }
 
         array_add(*last_command_result.build_errors, build_error);
@@ -753,6 +758,7 @@ go_to_current_build_error :: (placement: Editor_Placement = .in_place, show_erro
         cursor := leave_only_original_cursor(editor);
         cursor.sel = build_error.file_path_location.start;
         cursor.pos = build_error.file_path_location.end;
+        put_cursor_in_valid_spot(cursor, buffer);
         if buffer.dirty then rescan_for_lines(buffer);
         select_line(cursor, buffer);
         editor.cursor_moved = true;
@@ -776,7 +782,13 @@ go_to_current_build_error :: (placement: Editor_Placement = .in_place, show_erro
         return;
     }
 
-    success := editors_open_file(path, placement);
+    success: bool;
+    if placement == .in_place {
+        // By default we want to open build errors in existing editors rather than creating new editors in place
+        success = editors_show_existing_file_or_open_in_place(path);
+    } else {
+        success = editors_open_file(path, placement);
+    }
     if !success return;
 
     editor, buffer := get_active_editor_and_buffer();

@@ -1,4 +1,4 @@
-[18]  # Version number. Do not delete.
+[25]  # Version number. Do not delete.
 
 # Based on the gruber darker theme by Jason Blevins
 # https://github.com/rexim/gruber-darker-theme
@@ -47,8 +47,8 @@ region_error:                           772222FF
 region_heredoc:                         141414FF
 
 build_panel_background:                 262624FF
-build_panel_scrollbar:                  33CCCC19
-build_panel_scrollbar_hover:            33CCCC4C
+build_panel_scrollbar:                  484848FF
+build_panel_scrollbar_hover:            484848FF
 build_panel_scrollbar_background:       2626244C
 build_panel_title_bar:                  141416FF
 
@@ -98,3 +98,19 @@ active_pane_border:                     FFDD3311
 
 # Added after migration to version [18]
 inactive_pane_dim_overlay:              050505FF
+
+# Added after migration to version [19]
+code_comment_highlight1:                E0AD82FF
+code_comment_highlight2:                FF0000FF
+code_comment_highlight3:                FFDD33FF
+code_comment_highlight4:                E4E4EFFF
+
+# Added after migration to version [20]
+cursor_line_highlight:                  141416FF
+color_preview_title_bar:                141416FF
+
+# Added after migration to version [21]
+code_addition:                          33B333FF
+code_deletion:                          E64D4DFF
+region_addition:                        2260224C
+region_deletion:                        7722224C

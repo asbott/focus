@@ -81,6 +81,8 @@ Pointer_Image :: enum u16 {
     pointers: [NUM_POINTERS] *NSCursor;
 } else #if OS == .LINUX {
     set_pointer_image :: (image: Pointer_Image) {
+        if image == current_pointer_image return;
+
         if (image >= 0) && (image <= cast(Pointer_Image) NUM_POINTERS) {
             current_pointer_image = image;
             pointer_image_was_set_this_frame = true;
@@ -95,6 +97,12 @@ Pointer_Image :: enum u16 {
 NUM_POINTERS :: #run enum_highest_value(Pointer_Image)+1;
 
 pointer_end_frame :: () {
+    #if OS == .MACOS {
+        // macOS does not automatically update the mouse pointer image when hovering over the window title bar.
+        // Note that we don't want to update the pointer image if we are dragging the mouse pointer to select text.
+        if mouse.pointer.y > xx window_height && !mouse.left.is_dragging set_pointer_image(.NORMAL);
+    }
+
     if !pointer_image_was_set_this_frame {
         if !already_reset_pointer_image {
             set_pointer_image(.NORMAL); // This itself sets pointer_image* and already_reset*, so don't assume anything!

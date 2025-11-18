@@ -13,7 +13,7 @@ tokenize_csharp :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [
 
         tokenizer.last_token = token;
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+        highlight_token(buffer, token);
     }
 
     return .[];
@@ -93,9 +93,9 @@ get_next_token :: (using tokenizer: *CSharp_Tokenizer) -> Token {
         is_verbatim := interpolated_string_is_verbatim[interpolated_string_is_verbatim.count - 1];
         parse_interpolated_string_literal(tokenizer, *token, is_verbatim , is_start = false);
         array_ordered_remove_by_index(*interpolated_string_is_verbatim, interpolated_string_is_verbatim.count - 1);
-    } else if is_alpha(char) || char == #char "_" {
+    } else if ascii_is_alpha(char) || char == #char "_" {
         parse_identifier(tokenizer, *token, true);
-    } else if is_digit(char) {
+    } else if ascii_is_digit(char) {
         parse_number(tokenizer, *token);
     } else if char == {
         // https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/
@@ -146,7 +146,7 @@ parse_identifier :: (using tokenizer: *Tokenizer, token: *Token, check_for_keywo
     identifier := read_identifier_string(tokenizer);
 
     if check_for_keyword && identifier.count <= MAX_KEYWORD_LENGTH {
-        kw_token, ok := table_find(*KEYWORD_MAP, identifier);
+        ok, kw_token := table_find(*KEYWORD_MAP, identifier);
 
         if ok { token.type = kw_token.type; token.keyword = kw_token.keyword; return; }
     }
@@ -184,7 +184,7 @@ parse_number :: (using tokenizer: *Tokenizer, token: *Token) {
     }
 
     // Eat initial digits/underscores
-    while t < max_t && (is_digit(t.*) || is_valid_underscore(t, max_t, is_digit)) {
+    while t < max_t && (ascii_is_digit(t.*) || is_valid_underscore(t, max_t, ascii_is_digit)) {
         t += 1;
     }
     if t >= max_t return;
@@ -193,11 +193,11 @@ parse_number :: (using tokenizer: *Tokenizer, token: *Token) {
         // Float, double or decimal
         // First char after a decimal point must be a digit(cannot be an underscore).
         t += 1;
-        if t >= max_t || !is_digit(t.*) { token.type = .invalid; return; }
+        if t >= max_t || !ascii_is_digit(t.*) { token.type = .invalid; return; }
 
         // Eat digits/underscores after the decimal point
         t += 1;
-        while t < max_t && (is_digit(t.*) || is_valid_underscore(t, max_t, is_digit)) {
+        while t < max_t && (ascii_is_digit(t.*) || is_valid_underscore(t, max_t, ascii_is_digit)) {
             t += 1;
         }
 
@@ -213,7 +213,7 @@ parse_number :: (using tokenizer: *Tokenizer, token: *Token) {
               if t >= max_t return;
             }
 
-            while t < max_t && (is_digit(t.*) || is_valid_underscore(t, max_t, is_digit)) {
+            while t < max_t && (ascii_is_digit(t.*) || is_valid_underscore(t, max_t, ascii_is_digit)) {
                 t += 1;
             }
             if t >= max_t return;
@@ -360,16 +360,15 @@ parse_compiler_directive :: (using tokenizer: *Tokenizer, token: *Token) {
 
     t += 1;
     eat_white_space(tokenizer);  // There may be spaces between the # and the name
-    if !is_alpha(t.*) return;
+    if !ascii_is_alpha(t.*) return;
 
     directive := read_identifier_string(tokenizer);
 
-    while t < max_t && is_alnum(t.*) t += 1;
-    if t >= max_t return;
+    while t < max_t && ascii_is_alnum(t.*) t += 1;
 
     // Check if it's one of the existing directives
     if directive.count > MAX_DIRECTIVE_LENGTH return;
-    token_directive, ok := table_find(*DIRECTIVES_MAP, directive);
+    ok, token_directive := table_find(*DIRECTIVES_MAP, directive);
     if ok {
         token.type = .directive;
         token.directive = token_directive;
@@ -624,7 +623,7 @@ parse_at :: (using tokenizer: *CSharp_Tokenizer, token: *Token, is_interpolated 
             // Verbatim string
             parse_verbatim_string_literal(tokenizer, token);
         }
-    } else if is_alpha(t.*) || t.* == #char "_" {
+    } else if ascii_is_alpha(t.*) || t.* == #char "_" {
         // Identifier or disambiguate attribute
         parse_identifier(tokenizer, token, check_for_keyword = false);
     }
@@ -669,8 +668,7 @@ CSharp_Tokenizer :: struct {
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     union {
         keyword:        Keyword;
@@ -793,4 +791,3 @@ MAX_DIRECTIVE_LENGTH :: #run -> s32 {
     for DIRECTIVES { if it.count > result then result = it.count; }
     return xx result;
 }
-

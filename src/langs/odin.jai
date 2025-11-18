@@ -88,7 +88,7 @@ tokenize_odin :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] 
         tokenizer.last_tokens[1] = tokenizer.last_tokens[0];
         tokenizer.last_tokens[0] = token;
 
-        memset(tokens.data + token.start, xx token.type, token.len);
+        highlight_token(buffer, token);
     }
 
     return .[];
@@ -172,15 +172,15 @@ get_next_token :: (using tokenizer: *Odin_Tokenizer) -> Token {
     // UTF-8 characters elsewhere are a syntax error.
     char := t.*;
 
-    if is_alpha(char) || char == #char "_" {
+    if ascii_is_alpha(char) || char == #char "_" {
         parse_identifier(tokenizer, *token);
-    } else if is_digit(char) {
+    } else if ascii_is_digit(char) {
         // Handle number literals that don't look like they are being finished properly
         // For example, 0b10002 will highlight 0b1000 as one number and 2 as another number,
         // but when highlit in editor it looks like one number literal rather than two
         // The solution here is to not highlight more numbers if there are many number tokens in a row
         last_char := (t - 1).*;
-        if tokenizer.last_tokens[1].type != .number || (!is_digit(last_char) && last_char != #char "_") {
+        if tokenizer.last_tokens[1].type != .number || (!ascii_is_digit(last_char) && last_char != #char "_") {
             parse_number(tokenizer, *token);
         }
         else {
@@ -241,7 +241,7 @@ parse_identifier :: (using tokenizer: *Odin_Tokenizer, token: *Token) {
 
     // Maybe it's a keyword
     if identifier_str.count <= MAX_KEYWORD_LENGTH {
-        kw_token, ok := table_find(*KEYWORD_MAP, identifier_str);
+        ok, kw_token := table_find(*KEYWORD_MAP, identifier_str);
         if ok { token.type = kw_token.type; token.keyword = kw_token.keyword; return; }
     }
 }
@@ -252,7 +252,7 @@ maybe_parse_attribute :: (using tokenizer: *Odin_Tokenizer, token: *Token) {
     attr_str.count = token.len;
 
     if attr_str.count > MAX_ATTRIBUTE_LENGTH then return;
-    attr, ok := table_find(*ATTRIBUTES_MAP, attr_str);
+    ok, attr := table_find(*ATTRIBUTES_MAP, attr_str);
     if !ok then return;
 
     token.type = .attribute;
@@ -266,7 +266,7 @@ parse_number :: (using tokenizer: *Odin_Tokenizer, token: *Token) {
     if t >= max_t return;
 
     is_decimal_variant :: inline (c: u8) -> bool {
-        return is_digit(c)    || c == #char "." || c == #char "-" ||
+        return ascii_is_digit(c)    || c == #char "." || c == #char "-" ||
                c == #char "e" || c == #char "E" ||
                c == #char "i" || c == #char "j" || c == #char "k";
     }
@@ -314,7 +314,7 @@ parse_number :: (using tokenizer: *Odin_Tokenizer, token: *Token) {
     else if t.* == #char "o" {
         // Octal
         is_octal :: inline (c: u8) -> bool {
-            return is_digit(c) && c < #char "8";
+            return ascii_is_digit(c) && c < #char "8";
         }
 
         t += 1;
@@ -334,18 +334,17 @@ parse_directive :: (using tokenizer: *Odin_Tokenizer, token: *Token) {
 
     t += 1;
     eat_white_space(tokenizer);  // there may be spaces between the # and the name
-    if !is_alpha(t.*) then return;
+    if !ascii_is_alpha(t.*) then return;
 
     auto_release_temp();
 
     directive_str := read_identifier_string_tmp(tokenizer);
 
-    while t < max_t && is_alnum(t.*) t += 1;
-    if t >= max_t return;
+    while t < max_t && ascii_is_alnum(t.*) t += 1;
 
     // Check if it's one of the existing directives
     if directive_str.count > MAX_DIRECTIVE_LENGTH return;
-    directive, ok := table_find(*DIRECTIVES_MAP, directive_str);
+    ok, directive := table_find(*DIRECTIVES_MAP, directive_str);
     if ok {
         token.type = .directive;
         token.directive = directive;
@@ -400,7 +399,7 @@ parse_minus :: (using tokenizer: *Odin_Tokenizer, token: *Token) {
                 token.operation = .unknown;  // -- is not a valid token
             }
         case;
-            if tokenizer.last_tokens[1].type != .number && is_digit(t.*) {
+            if tokenizer.last_tokens[1].type != .number && ascii_is_digit(t.*) {
                 parse_number(tokenizer, token);
             }
     }
@@ -694,7 +693,7 @@ read_identifier_string_tmp :: (using tokenizer: *Odin_Tokenizer) -> string /* te
     array_add(*identifier, t.*);
     t += 1;
 
-    while t < max_t && is_alnum(t.*) {
+    while t < max_t && ascii_is_alnum(t.*) {
         array_add(*identifier, t.*);
         t += 1;
     }
@@ -714,8 +713,7 @@ Odin_Tokenizer :: struct {
 }
 
 Token :: struct {
-    start, len: s32;
-    type: Token_Type;
+    using #as base: Base_Token;
 
     // Additional info to distinguish between keywords/punctuation
     union {
