@@ -40,6 +40,16 @@ highlight_matching_brackets:                        false
 show_paste_effect:                                  true
 strip_trailing_whitespace_on_save:                  except_lines_with_cursor  # options: all, except_lines_with_cursor, disabled
 smooth_scrolling:                                   true
+smooth_scrolling_keys:                              true
+c_parse_functions:                                  true   # parse/highlight C functions
+c_parse_variables:                                  true   # globals, locals, parameters, and verified struct members
+c_goto_definition:                                  true
+c_compiler_syntax_check:                            true   # disable if the configured compiler is unavailable
+c_compiler_executable:                              clang
+c_compiler_syntax_check_parameters:                  -fsyntax-only -fno-color-diagnostics -ferror-limit=100 -x c -I .
+c_caret_history:                                    true
+c_autocomplete:                                     true
+c_bookmarks:                                        true
 scroll_beyond_last_line:                            true
 double_shift_to_search_in_workspace:                false
 can_cancel_go_to_line:                              true
@@ -198,6 +208,12 @@ Cmd-Shift-S                     save_as
 
 Cmd-Opt-Minus                   cursor_go_back
 Cmd-Opt-Plus                    cursor_go_forward
+Cmd-Shift-Z                     cursor_go_back
+Cmd-Shift-Y                     cursor_go_forward
+F12                             goto_definition
+Cmd-Tab                         autocomplete
+Cmd-K                           new_bookmark
+Cmd-M                           go_to_bookmark
 
 Cmd-Shift-Minus                 go_to_previous_buffer
 Cmd-Shift-Plus                  go_to_next_buffer
@@ -299,12 +315,12 @@ Cmd-X                           cut
 Cmd-V                           paste
 
 Cmd-Z                           undo
-Cmd-Shift-Z                     redo
+Cmd-Opt-Y                       redo
 
 Cmd-D                           select_word
 Cmd-A                           select_all
 
-Cmd-K                           cut_to_end_of_line
+Cmd-Shift-K                     cut_to_end_of_line
 Cmd-Delete                      delete_to_end_of_line
 Cmd-Backspace                   delete_to_start_of_line
 
@@ -377,7 +393,7 @@ Shift-Tab                       focus_previous_ui_element
 {Shift}-End                     jump_to_line_end
 {Shift}-Cmd-Home                jump_to_file_start
 {Shift}-Cmd-End                 jump_to_file_end
-{Shift}-Cmd-M                   jump_to_matching_bracket
+Cmd-Shift-M                     jump_to_matching_bracket
 
 {Shift}-Backspace               delete_left_char
 {Shift}-Delete                  delete_right_char
@@ -437,6 +453,7 @@ scrollbar:                              33CCCC19
 scrollbar_hover:                        33CCCC4C
 scrollbar_background:                   10191F4C
 cursor:                                 26B2B2FF
+transparent_caret:                     FFFFFF55
 cursor_inactive:                        196666FF
 paste_animation:                        1C4449FF
 splitter:                               10191FFF
@@ -462,6 +479,7 @@ ui_warning_dim:                         986032FF
 ui_error:                               772222FF
 ui_error_bright:                        FF0000FF
 ui_success:                             227722FF
+diagnostic_error_underline:             FF3333FF
 
 build_panel_background:                 1A2831FF
 build_panel_scrollbar:                  33CCCC19
@@ -499,6 +517,11 @@ code_attribute:                         E67D74FF
 code_enum_variant:                      BFC9DBFF
 code_macro:                             E0AD82FF
 code_function:                          D0C5A9FF
+code_variable_global:                   9CDCFEFF
+code_variable_local:                    BFC9DBFF
+code_parameter:                         9CDCFEFF
+code_struct_member:                     C8C8C8FF
+code_completion_ghost:                  808080FF
 
 code_builtin_variable:                  D699B5FF
 code_builtin_function:                  E0AD82FF
@@ -518,4 +541,3 @@ code_comment_highlight1:                E67D74FF
 code_comment_highlight2:                FF0000FF
 code_comment_highlight3:                E0AD82FF
 code_comment_highlight4:                D699B5FF
-

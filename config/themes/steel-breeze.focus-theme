@@ -1,4 +1,4 @@
-[25]  # Version number. Do not delete.
+[29]  # Version number. Do not delete.
 
 [colors]
 
@@ -32,7 +32,9 @@ search_result_inactive:                 ffffff30 # Background of unhighlighted o
 scrollbar:                              ffffff40 # Actual scrollbar
 scrollbar_background:                   ffffff20 # Scrollbar curb
 scrollbar_hover:                        ffffff30 # Whole scrollbar groove when hovered
+
 cursor:                                 4020ffff # Text cursor background in body area
+transparent_caret:                     FFFFFF55
 splitter:                               ffffff20 # Splitter between right and left body
 splitter_hover:                         ffffff40 # Splitter while hovered
 list_cursor:                            4000ffa0 # Cursor in dialog
@@ -51,10 +53,17 @@ ui_error:                               ee4444e0
 ui_error_bright:                        ee4444ff
 ui_success:                             44c044e0
 
+diagnostic_error_underline:             ee4444ff
 code_default:                           ffffffe0
 code_comment:                           ffffff80
 code_type:                              00ff88e0
 code_function:                          0060ffe0
+code_variable_global:                   0060ffe0
+code_variable_local:                    BFC9DBFF
+code_parameter:                         0060ffe0
+
+code_struct_member:                     BFC9DBFF
+code_completion_ghost:                  808080FF
 code_punctuation:                       ffffff60
 code_operation:                         ffffff70
 code_string_literal:                    ff6000e0

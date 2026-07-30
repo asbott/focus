@@ -35,6 +35,7 @@ build :: () {
 
     optimized := false;
     windows7  := false;
+    c_language_feature_tests := false;
     set_optimization(*options, .DEBUG);
     options.arithmetic_overflow_check = .FATAL;
     build_dir := "build_debug";
@@ -63,6 +64,8 @@ build :: () {
           case "windows7";
             windows7 = true;
             options.output_executable_name = "focus_windows7";
+          case "c_tests";
+            c_language_feature_tests = true;
           case;
             compiler_report(tprint("Command-line argument #%, '%', is invalid. Valid options are: 'debug', 'release'.\n", it_index+1, arg));
         }
@@ -110,12 +113,14 @@ build :: () {
             DEBUG           :: %;
             WINDOWS7        :: %;
             NO_OUTPUT_BUILD :: %;
+            C_LANGUAGE_FEATURE_TESTS :: %;
         STRING,
             VERSION,
             RELEASE_DATE,
             ifx optimized then "false" else "true",
             ifx windows7  then "true"  else "false",
             options.output_type == .NO_OUTPUT,
+            ifx c_language_feature_tests then "true" else "false",
     );
     add_build_string(build_constants, w);
 

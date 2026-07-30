@@ -1,4 +1,4 @@
-[25]  # Version number. Do not delete.
+[29]  # Version number. Do not delete.
       # (https://rosepinetheme.com/)
 
 [colors]
@@ -15,7 +15,9 @@ search_result_inactive:                 56949F75
 scrollbar:                              797593FF
 scrollbar_hover:                        797593FF
 scrollbar_background:                   F2E9E1FF
+
 cursor:                                 797593FF
+transparent_caret:                     FFFFFF55
 cursor_inactive:                        797593FF
 paste_animation:                        797593FF
 splitter:                               FFFAF3FF
@@ -37,6 +39,7 @@ ui_error:                               D7827EFF
 ui_error_bright:                        D7827EFF
 ui_success:                             56949FFF
 
+diagnostic_error_underline:             D7827EFF
 region_scope_export:                    FAF4EDFF
 region_scope_file:                      FFFAF375
 region_scope_module:                    FFFAF375
@@ -56,6 +59,12 @@ code_default:                           575279FF
 code_comment:                           9893A577
 code_type:                              EA9D34FF
 code_function:                          907AA9FF
+code_variable_global:                   907AA9FF
+code_variable_local:                    575279FF
+code_parameter:                         907AA9FF
+
+code_struct_member:                     575279FF
+code_completion_ghost:                  808080FF
 code_punctuation:                       575279FF
 code_operation:                         56949FFF
 code_string_literal:                    EA9D34FF

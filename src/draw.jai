@@ -55,6 +55,7 @@ draw_frame :: () {
         case .delete_file_dialog;               draw_delete_file_dialog();
         case .finder;                           draw_finder();
         case .go_to_line_dialog;                draw_go_to_line_dialog(active_editor_rect);
+        case .bookmark_dialog;                  draw_bookmark_dialog(active_editor_rect);
         case .switch_to_project_dialog;         draw_switch_to_project_dialog();
         case .unsaved_buffers_dialog;           draw_unsaved_buffers_dialog();
         case .confirm_overwrite_dialog;         draw_confirm_overwrite_dialog();
@@ -1201,14 +1202,14 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
                 top_target  := clamp(viewport.top - cast(s32) offset.y, min_y_scroll, max_y_scroll);
 
                 if left_target != viewport.scroll_x.target {
-                    if buffer_settings.disable_viewport_chasing_cursor_near_the_edge && abs(left_target - viewport.scroll_x.target) < cast(s32) (2 * char_x_advance) {
+                    if !config.settings.smooth_scrolling_keys || (buffer_settings.disable_viewport_chasing_cursor_near_the_edge && abs(left_target - viewport.scroll_x.target) < cast(s32) (2 * char_x_advance)) {
                         snap_viewport_left_to_target(editor, left_target);
                     } else {
                         start_animation(*viewport.scroll_x, viewport.left, left_target);
                     }
                 }
                 if top_target != viewport.scroll_y.target {
-                    if buffer_settings.disable_viewport_chasing_cursor_near_the_edge && abs(top_target - viewport.scroll_y.target) < cast(s32) (2 * line_height) {
+                    if !config.settings.smooth_scrolling_keys || (buffer_settings.disable_viewport_chasing_cursor_near_the_edge && abs(top_target - viewport.scroll_y.target) < cast(s32) (2 * line_height)) {
                         snap_viewport_top_to_target(editor, buffer, top_target);
                     } else {
                         start_animation(*viewport.scroll_y, viewport.top, top_target);
@@ -1222,8 +1223,13 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
             cursor_pos_from_top  := cursor_coords[main_cursor].pos.line * line_height;
             left_target          := cast(s32) max(cursor_pos_from_left - rect.w + char_x_advance * 3, 0);
             top_target           := cast(s32) max(cursor_pos_from_top  - rect.h * config.settings.cursor_position_after_jump, -scroll_behind_height);
-            if left_target != scroll_x.target then start_animation(*viewport.scroll_x, viewport.left, left_target);
-            if top_target  != scroll_y.target then start_animation(*viewport.scroll_y, viewport.top,  top_target);
+            if config.settings.smooth_scrolling_keys {
+                if left_target != scroll_x.target then start_animation(*viewport.scroll_x, viewport.left, left_target);
+                if top_target  != scroll_y.target then start_animation(*viewport.scroll_y, viewport.top,  top_target);
+            } else {
+                if left_target != scroll_x.target then snap_viewport_left_to_target(editor, left_target);
+                if top_target  != scroll_y.target then snap_viewport_top_to_target(editor, buffer, top_target);
+            }
 
             scroll_to_cursor = .no;
 
@@ -1579,6 +1585,37 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
             code_lines[line_num-visible_lines_start] = .{ line = line, start_offset = line_start, tab_spaces = xx tab_spaces, tokens = xx,force tokens };
         }
 
+        // Materialize the completion suffix into a temporary display-only line.
+        // This shifts existing text to the right without touching buffer bytes.
+        if editor.completion.active && editor_id == get_active_editor_id() {
+            suffix := c_get_completion_suffix(editor, buffer);
+            cursor := get_main_cursor(editor);
+            cursor_line := offset_to_line(editor, buffer, cursor.pos, safe = true);
+            line_index := cursor_line-visible_lines_start;
+            if suffix && line_index >= 0 && line_index < code_lines.count {
+                line := *code_lines[line_index];
+                visible_start := cast(s32) (line.line.data-buffer.bytes.data);
+                insertion := cursor.pos-visible_start;
+                if insertion >= 0 && insertion <= line.line.count {
+                    display_bytes := NewArray(line.line.count+suffix.count, u8, initialized = false,, allocator = temp);
+                    display_tokens := NewArray(line.line.count+suffix.count, u8, initialized = false,, allocator = temp);
+                    if insertion {
+                        memcpy(display_bytes.data, line.line.data, insertion);
+                        if line.tokens then memcpy(display_tokens.data, line.tokens.data, insertion);
+                    }
+                    memcpy(display_bytes.data+insertion, suffix.data, suffix.count);
+                    memset(display_tokens.data+insertion, xx Token_Type.completion_ghost, suffix.count);
+                    remaining := line.line.count-insertion;
+                    if remaining {
+                        memcpy(display_bytes.data+insertion+suffix.count, line.line.data+insertion, remaining);
+                        if line.tokens then memcpy(display_tokens.data+insertion+suffix.count, line.tokens.data+insertion, remaining);
+                    }
+                    line.line = cast(string) display_bytes;
+                    line.tokens = display_tokens;
+                }
+            }
+        }
+
         selections: [..] Offset_Range;
         selections.allocator = temp;
         for cursor : cursors {
@@ -1589,6 +1626,30 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
         }
 
         draw_code(font_main, pen, code_lines, tab_size, selections, start_col = hidden_chars_on_the_left, is_colored = buffer.tokens.count > 0);
+
+        // Compiler diagnostics are drawn independently from token colors so syntax
+        // highlighting stays readable and the underline color is themeable.
+        if buffer.lang == .C && buffer_settings.c_compiler_syntax_check && buffer.c_diagnostics.count {
+            for diagnostic: buffer.c_diagnostics {
+                if !buffer.bytes.count || diagnostic.offset < 0 || diagnostic.offset >= buffer.bytes.count continue;
+                if diagnostic.offset+diagnostic.count < visible_offset_range.start || diagnostic.offset > visible_offset_range.end continue;
+                start_coords := offset_to_coords(editor, buffer, diagnostic.offset);
+                diagnostic_end := clamp(diagnostic.offset+diagnostic.count, diagnostic.offset+1, cast(s32)buffer.bytes.count);
+                end_coords := offset_to_coords(editor, buffer, diagnostic_end);
+                start_pos := get_cursor_screen_pos(text_origin, start_coords);
+                end_pos := get_cursor_screen_pos(text_origin, end_coords);
+                if start_coords.line != end_coords.line then end_pos.x = start_pos.x+char_x_advance;
+                underline := Rect.{
+                    x = start_pos.x,
+                    // Cursor/text coordinates use the lower edge of the line as
+                    // their origin; adding line_height placed this over the text.
+                    y = start_pos.y,
+                    w = max(end_pos.x-start_pos.x, char_x_advance),
+                    h = max(2*dpi_scale, 1),
+                };
+                draw_rect(underline, Color.DIAGNOSTIC_ERROR_UNDERLINE);
+            }
+        }
 
         // Draw continuation markers for wrapped lines
         if line_wrap_is_active(editor) && !buffer_settings.show_line_numbers && !as_build_panel {
@@ -1631,10 +1692,12 @@ draw_editor :: (editor_id: s64, main_area: Rect, ui_id: Ui_Id, pane: *Editor_Pan
 
                 cursor_rect := make_rect(screen_pos.x, screen_pos.y, cursor_width, line_height);
                 cursor_rect = align_to_grid(cursor_rect);
-                draw_rounded_rect(cursor_rect, Color.CURSOR, radius = rounding_radius_small, set_shader = true);
+                ghost_cursor := editor.completion.active && cursor.pos == get_main_cursor(editor).pos && c_get_completion_suffix(editor, buffer);
+                cursor_color := ifx ghost_cursor then Color.TRANSPARENT_CARET else Color.CURSOR;
+                draw_rounded_rect(cursor_rect, cursor_color, radius = rounding_radius_small, set_shader = true);
 
                 // Draw the letter on top for better visibility
-                if cursor_as_block {
+                if cursor_as_block && !ghost_cursor {
                     letter := get_char_at_offset_as_string(buffer, cursor.pos);
                     if letter != "\n" {
                         Simp.draw_text(font_main, xx cursor_rect.x, xx (cursor_rect.y + (line_height - char_x_advance) / 2), letter, xx Color.CHAR_UNDER_CURSOR);
@@ -3632,6 +3695,11 @@ draw_go_to_line_dialog :: (active_editor_rect: Rect) {
     draw_text_input(*go_to_line_dialog.input, input_rect, ui_id = input_id, active = true, label = " line number", color = color);
 }
 
+draw_bookmark_dialog :: (active_editor_rect: Rect) {
+    label := ifx bookmark_dialog.mode == .create then " New Bookmark" else " Go to bookmark";
+    draw_generic_choice_dialog(*bookmark_dialog, Ui_Id.bookmark_dialog, label);
+}
+
 get_cursor_screen_pos :: (text_origin: Vector2, coords: Coords) -> Vector2 {
     return .{
         text_origin.x + coords.col * char_x_advance,
@@ -4410,6 +4478,7 @@ Ui_Id :: enum s64 {
     theme_dialog                :: -17;
     language_dialog             :: -18;
     color_picker_dialog         :: -19;
+    bookmark_dialog             :: -20;
 
     // The rest will be derived from loc
 }

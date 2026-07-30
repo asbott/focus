@@ -1,4 +1,4 @@
-[25]  # Version number. Do not delete.
+[29]  # Version number. Do not delete.
       # (https://github.com/rebelot/kanagawa.nvim)
 
 [colors]
@@ -15,7 +15,9 @@ search_result_inactive:                 7E9CD8FF
 scrollbar:                              54546DFF
 scrollbar_hover:                        717C7CFF
 scrollbar_background:                   363646FF
+
 cursor:                                 C8C093FF
+transparent_caret:                     FFFFFF55
 cursor_inactive:                        54546DFF
 paste_animation:                        54546DFF
 splitter:                               16161DFF
@@ -37,6 +39,7 @@ ui_error:                               FF5D62FF
 ui_error_bright:                        FF5D62FF
 ui_success:                             98BB6CFF
 
+diagnostic_error_underline:             FF5D62FF
 region_scope_export:                    1F1F28FF
 region_scope_file:                      16161D75
 region_scope_module:                    16161D75
@@ -56,6 +59,12 @@ code_default:                           DCD7BAFF
 code_comment:                           727169FF
 code_type:                              7FB4CAFF
 code_function:                          7AA89FFF
+code_variable_global:                   7AA89FFF
+code_variable_local:                    DCD7BAFF
+code_parameter:                         7AA89FFF
+
+code_struct_member:                     DCD7BAFF
+code_completion_ghost:                  808080FF
 code_punctuation:                       C8C093FF
 code_operation:                         8A9A7BFF
 code_string_literal:                    98BB6CFF

@@ -391,6 +391,11 @@ Token_Type :: enum u8 {
     enum_variant;
     macro;
     function;
+    variable_global;
+    variable_local;
+    parameter;
+    struct_member;
+    completion_ghost;
 
     builtin_variable;
     builtin_function;

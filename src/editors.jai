@@ -33,6 +33,8 @@ editors_handle_event :: (event: Input.Event) -> handled: bool {
         case .TEXT_INPUT;
             if config.settings.hide_mouse_when_typing platform_show_cursor(false);
             if !key_sequence_input_in_progress() {
+                editor, _ := get_active_editor_and_buffer();
+                if editor then c_close_completion(editor);
                 active_editor_type_char(event.utf32);
                 return true;
             }
@@ -171,6 +173,20 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
     }
 
     // We always want to put some actions in a separate edit group (e.g. block indent)
+    if editor.completion.active {
+        if action == .escape || action == .close_dialog ||
+           action == .delete_left_char || action == .delete_left_by_character_type ||
+           action == .delete_left_by_character_type_fast || action == .delete_left_through_word ||
+           action == .delete_left_through_word_throttled {
+            c_close_completion(editor);
+            return true;
+        }
+        // Pressing/releasing a modifier is not an autocomplete decision. In
+        // particular Ctrl may be released between Ctrl-Tab cycles.
+        if action != .autocomplete && cast(u32)action != INVALID_KEYMAP_ACTION then c_close_completion(editor);
+    }
+
+    // We always want to put some actions in a separate edit group (e.g. block indent)
     new_group := false;
     for cursor : editor.cursors { if new_edit_group_required_for_action(action, cursor) { new_group = true; break; } }
     if new_group || (to_float64_seconds(frame_time) - buffer.last_edit_time) >= EDIT_GROUP_TIMEOUT then new_edit_group(buffer, editor);  // do it before action
@@ -191,6 +207,12 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
         case .toggle_expand;                    toggle_expand();
         case .search_in_buffer;                 open_search_bar(editor, buffer);
         case .search_in_buffer_dropdown_mode;   open_search_bar(editor, buffer, .dropdown);
+        case .new_bookmark;                     show_bookmark_dialog(.create);
+        case .go_to_bookmark;                   show_bookmark_dialog(.go_to);
+        case .cursor_go_back;                   if config.settings.c_caret_history then action_cursor_go_back();
+        case .cursor_go_forward;                if config.settings.c_caret_history then action_cursor_go_forward();
+        case .goto_definition;                  c_action_goto_definition();
+        case .autocomplete;                     c_action_autocomplete();
 
         case .close_dialog;                     hide_build_panel();
         case .escape;                           action_escape(editor);
@@ -1997,13 +2019,13 @@ action_go_to_previous_buffer :: (event: *Input.Event) {
 }
 
 action_cursor_go_back :: () {
-    moved, editor_id, prev_cursor := move_back_in_cursor_history();
-    if moved then history_reopen_editor_and_set_cursor(editor_id, prev_cursor);
+    moved, editor_id, buffer_id, prev_cursor := move_back_in_cursor_history();
+    if moved then history_reopen_editor_and_set_cursor(editor_id, prev_cursor, buffer_id);
 }
 
 action_cursor_go_forward :: () {
-    moved, editor_id, next_cursor := move_forward_in_cursor_history();
-    if moved then history_reopen_editor_and_set_cursor(editor_id, next_cursor);
+    moved, editor_id, buffer_id, next_cursor := move_forward_in_cursor_history();
+    if moved then history_reopen_editor_and_set_cursor(editor_id, next_cursor, buffer_id);
 }
 
 #scope_file
@@ -4918,6 +4940,7 @@ Editor :: struct {
     refresh_selection  := false;
     search_whole_words := false;  // used when creating new cursors
     cursor_moved       := false; // this may trigger a scroll so that the cursor is within acceptable bounds
+    completion: C_Completion_State;
 }
 
 Viewport :: struct {

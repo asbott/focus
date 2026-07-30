@@ -54,6 +54,8 @@ ACTIONS_COMMON :: string.[
     "search_in_buffer_dropdown_mode",
     "search_in_project",
     "go_to_line",
+    "new_bookmark",
+    "go_to_bookmark",
 
     "open_file_by_name",
     "navigate_to_file",
@@ -206,6 +208,8 @@ ACTIONS_EDITORS :: #run arrays_concat(ACTIONS_COMMON, string.[
     "create_new_file_in_side_pane",
     "cursor_go_back",
     "cursor_go_forward",
+    "goto_definition",
+    "autocomplete",
     "go_to_previous_buffer",
     "go_to_next_buffer",
     "toggle_line_wrap",
@@ -355,4 +359,3 @@ operator== :: (a: Hold_Action, b: Hold_Action) -> bool {
     return memcmp(*a, *b, size_of(Hold_Action)) == 0;
 }
 #poke_name Basic operator==;
-

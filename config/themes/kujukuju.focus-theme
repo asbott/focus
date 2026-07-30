@@ -1,4 +1,4 @@
-[25]  # Version number. Do not delete.
+[29]  # Version number. Do not delete.
 
 [colors]
 background0:                            141824FF
@@ -26,7 +26,9 @@ search_result_inactive:                 FCEDFC26
 scrollbar:                              080B14FF
 scrollbar_hover:                        309ECB4C
 scrollbar_background:                   10161F4C
+
 cursor:                                 26B2B2FF
+transparent_caret:                     FFFFFF55
 cursor_inactive:                        196666FF
 paste_animation:                        1C4449FF
 splitter:                               21333FFF
@@ -51,6 +53,7 @@ ui_error:                               772222FF
 ui_error_bright:                        FF0000FF
 ui_success:                             227722FF
 
+diagnostic_error_underline:             FF0000FF
 build_panel_background:                 1A2431FF
 build_panel_scrollbar:                  309ECB19
 build_panel_scrollbar_hover:            3294CB4C
@@ -88,6 +91,12 @@ code_enum_variant:                      CBCEBCFF
 code_macro:                             E0AD82FF
 code_function:                          FFCC66FF
 
+code_variable_global:                   FFCC66FF
+code_variable_local:                    CBCEBCFF
+code_parameter:                         FFCC66FF
+
+code_struct_member:                     CBCEBCFF
+code_completion_ghost:                  808080FF
 code_builtin_variable:                  9DD2BBFF
 code_builtin_function:                  E0AD82FF
 code_builtin_exception:                 E0AD82FF

@@ -14,6 +14,7 @@ refresh_open_buffers :: () {
         buffer.was_dirty_during_frame = false;
         buffer.needs_tokenizing = true;
         buffer.last_edit_time = frame_time64;
+        c_language_services_buffer_changed(buffer, editor.buffer_id);
 
         refresh_all_editors_for_buffer(editor.buffer_id);
 
@@ -65,6 +66,8 @@ delete_range_raw :: (using buffer: *Buffer, start: s32, end: s32, $notify := tru
     len := end - start;
     if len <= 0 return;
 
+    #if notify bookmarks_note_buffer_edit(buffer, start, end - start, 0);
+
     lock(*buffer.content_lock);
     delete_range(*bytes, start, len);
     unlock(*buffer.content_lock);
@@ -79,6 +82,8 @@ insert_string_raw :: (buffer: *Buffer, offset: s32, str: string, $notify := true
     bytes.data  = str.data;
     bytes.count = str.count;
 
+    #if notify bookmarks_note_buffer_edit(buffer, offset, 0, str.count);
+
     lock(*buffer.content_lock);
     insert_at(*buffer.bytes, offset, bytes);
     unlock(*buffer.content_lock);
@@ -89,6 +94,7 @@ insert_string_raw :: (buffer: *Buffer, offset: s32, str: string, $notify := true
 }
 
 replace_range_raw :: (buffer: *Buffer, start: s32, end: s32, str: string) {
+    bookmarks_note_buffer_edit(buffer, start, end - start, str.count);
     delete_range_raw(buffer, start, end, notify = false);
     insert_string_raw(buffer, start, str, notify = false);
     add_edit_notification(buffer, start, end - start, str.count);
@@ -511,14 +517,16 @@ retokenize :: (buffer: *Buffer) {
     lock(*buffer.content_lock);
     defer unlock(*buffer.content_lock);
 
-    log("Tokenizing %:", buffer.file.full_path);
-
     assert(!buffer.dirty);
     buffer.needs_tokenizing = false;
 
-    buffer.word_tree = .{};
-    bucket_array_reset(*buffer.word_node_buffer);
-    reset_keeping_memory(*buffer.included_buffer_indices);
+    old_user_type_signature := buffer.user_type_signature;
+    reset_user_type_index(buffer);
+    defer {
+        if workspace_scan_complete && old_user_type_signature != buffer.user_type_signature {
+            invalidate_user_type_dependents(buffer);
+        }
+    }
 
     if buffer.lang == .Plain_Text {
         // We don't store tokens for plain text buffers
@@ -554,28 +562,6 @@ retokenize :: (buffer: *Buffer) {
         }
     }
 
-    print_node :: (buffer: *Buffer, node: *Word_Node, buf: *u8, depth: s64) {
-        if (node == null) return;
-
-        // If next[0] is non-null, we have a completed word
-        if (node.next[0] != 0xffff) {
-            word := string.{ depth, buf };
-            print("%\n", word);
-        }
-
-        // Go through each possible child index
-        for i : 1..node.next.count-1 {
-            if (node.next[i] != 0xffff) {
-                child := *buffer.word_node_buffer[node.next[i]];
-                buf[depth] = char_index_az(i);
-                //print("->%", string.{ 1, buf + depth });
-                print_node(buffer, child, buf, depth + 1);
-            }
-        }
-    }
-    // Print words for debug
-    // buf: [256]u8;
-    // print_node(buffer, *buffer.word_tree, buf.data, 0);
 }
 
 buffer_needs_tokenizing :: (buffer: Buffer) -> bool {
@@ -799,7 +785,7 @@ save_buffer_to_file :: (buffer: *Buffer, buffer_id: s64, file_path: string) {
                 removed := table_remove(*buffers_table, file_path);
                 assert(removed, "For some reason table_remove failed. This is a very unexpected bug.");
                 existing_buffer := *open_buffers[existing_buffer_id];
-                existing_buffer.deleted  = true;
+                set_buffer_deleted(existing_buffer, true);
                 existing_buffer.modified = false;
                 existing_buffer.modified_on_disk = false;
 
@@ -807,10 +793,17 @@ save_buffer_to_file :: (buffer: *Buffer, buffer_id: s64, file_path: string) {
             }
 
             table_add(*buffers_table, copy_string(file_path), buffer_id);
+            note_user_type_buffer_table_changed();
         }
         unlock(*open_buffers_lock);
 
         save_buffer(buffer, buffer_id);
+        if !buffer.error_when_saving then bookmarks_note_buffer_saved(buffer_id, buffer.file.full_path);
+        if !buffer.error_when_saving && workspace_scan_complete {
+            // Publishing a previously untitled buffer may satisfy include paths
+            // that were negatively cached before this table entry existed.
+            invalidate_user_type_dependents(buffer);
+        }
     } else {
         // We're "saving as", in which case we want to create a new buffer and also keep the current buffer
         buffer_contents := get_buffer_contents_for_writing(buffer);
@@ -868,7 +861,7 @@ save_buffer :: (using buffer: *Buffer, buffer_id: s64) {
     if success {
         modified = false;
         modified_on_disk = false;
-        deleted = false;
+        set_buffer_deleted(buffer, false);
 
         meow_hash = calculate_hash(to_view(bytes));
 
@@ -914,7 +907,7 @@ delete_buffer_from_disk :: (using buffer: *Buffer) -> deleted: bool {
     success := file_delete(file_path);
     if !success then return false;
 
-    deleted          = true;
+    set_buffer_deleted(buffer, true);
     modified         = false;
     modified_on_disk = false;
 
@@ -1256,6 +1249,7 @@ find_or_create_buffer :: (path: string, tokenize := true) -> buffer_id: s64, cre
         buffer = bucket_array_add(*open_buffers);
         init_buffer(buffer);
         table_add(*buffers_table, copy_string(path), buffer_id);  // It should be ok to leak some memory here when we no longer need a buffer
+        note_user_type_buffer_table_changed();
     }
 
     unlock(*open_buffers_lock);  // only hold the lock when it's critical
@@ -1482,7 +1476,7 @@ refresh_buffer_from_disk_by_path :: (path: string) {
         lock(*open_buffers_lock);
         found_buffer, buffer_id := table_find(*buffers_table, path);
         if found_buffer {
-            open_buffers[buffer_id].deleted = true;
+            set_buffer_deleted(*open_buffers[buffer_id], true);
             finder.need_to_refresh_results = true;
             open_file_dialog.should_refresh_entries = true;
         }
@@ -1505,7 +1499,7 @@ refresh_buffer_from_disk_by_path :: (path: string) {
     // If we got to this point, the file definitely exists. Mark it as not deleted.
     // This will "undelete" previously deleted files, which is helpful when e.g. a user
     // switches branches in version control
-    buffer.deleted = false;
+    set_buffer_deleted(buffer, false);
     open_file_dialog.should_refresh_entries = true;
 
     if !buffer_file_has_changed_on_disk(buffer) return;
@@ -1549,7 +1543,7 @@ reload_from_disk :: (buffer_id: s64, force := false, show_user_messages := false
 
     buffer.crlf = bytes_removed > 0;
     buffer.meow_hash = file_hash;
-    buffer.deleted = false;
+    set_buffer_deleted(buffer, false);
 
     if buffer.modified && !force {
         // Mark conflict
@@ -1561,6 +1555,14 @@ reload_from_disk :: (buffer_id: s64, force := false, show_user_messages := false
         cursor_positions := remember_cursor_positions(buffer_id, in = .all_editors);
         replace_range(buffer, .{ 0, buffer.bytes.count }, file_contents_str);
         restore_cursor_positions(buffer_id, cursor_positions);
+
+        // User-type definitions are consumed by other buffers, including when
+        // this header has no editor of its own. Keep that index current on disk
+        // reloads instead of waiting until this buffer happens to be drawn.
+        if buffer.dirty && (buffer.lang == .C || buffer.uses_c_user_type_highlighting) {
+            rescan_for_lines(buffer);
+            retokenize(buffer);
+        }
     }
 
     refresh_all_editors_for_buffer(buffer_id);
@@ -1581,7 +1583,7 @@ maybe_mark_buffer_as_deleted :: (buffer_id: s64) {
     if !buffer.has_file return;
     if file_exists(buffer.file.full_path) return;  // no need to mark as deleted
 
-    buffer.deleted = true;
+    set_buffer_deleted(buffer, true);
     finder.need_to_refresh_results = true;
     open_file_dialog.should_refresh_entries = true;
 }
@@ -1605,8 +1607,7 @@ free_buffer :: (using buffer: *Buffer) {
     free_buffer_extra(extra);
     extra = null;
 
-    bucket_array_reset(*buffer.word_node_buffer);
-    reset(*buffer.included_buffer_indices);
+    free_user_type_index(buffer);
 }
 
 free_buffer_extra :: (extra: *Buffer.Extra) {
@@ -1646,8 +1647,6 @@ get_range_as_string :: (buffer: Buffer, range: Offset_Range) -> string {
 
 init_buffer :: (using buffer: *Buffer) {
     init(*content_lock);
-    buffer.word_tree = .{};
-    assert(buffer.word_tree.next[0] == 0xffffffff);
 }
 
 get_unsaved_buffer_ids :: () -> [] s64 /* temp */ {
@@ -1765,6 +1764,7 @@ add_edit_notification :: (buffer: *Buffer, offset: s64, old_count: s64, new_coun
     };
 
     history_add_edit_notification_to_batch(notification);
+    c_language_services_note_edit(notification);
 
     if buffer.num_editors_open >= 2 {
         // Notify other editors
@@ -1838,126 +1838,512 @@ deinit :: (using edit_group: *Buffer.Edit_Group) {
 
 buffer_edit_notifications: Array(Buffer.Edit_Notification);
 
-Word_Node :: struct {
-    // a-z*2 + 0-9 + 1 for null terminator + 1 for _
-    // u24 index into word_node_buffer, u8 flags
-    next: [80]u32 = #run -> [80]u32 { n: [80]u32; for * n  it.* = 0xffffffff; return n; };
-
-}
 Word_Flags :: enum_flags u8 {
     undefined;
     type;
     macro;
     enum_constant;
+    macro_undefined;
+    function;
+    variable;
 }
 
-az_char_index :: (char: u8) -> int {
-    if (char >= #char "0" && char <= #char "9") {
-        return char - #char "0" + 1;
-    } else if (char >= #char "a" && char <= #char "z") {
-        return (#char "9" - #char "0") + 1 + (char - #char "a") + 1;
-    } else if (char >= #char "A" && char <= #char "Z") {
-        return (#char "9" - #char "0") + 27 + (char - #char "A") + 1;
-    } else if (char == #char "_") {
-        return 79;
-    } else {
-        return -1;
-    }
-}
-char_index_az :: (i: int) -> u8 {
-    if (i >= 1 && i <= 10) {
-        return #char "0" +  cast(u8)i - 1;
-    } else if (i >= 11 && i <= 36) {
-        return #char "a" + cast(u8)i - 11;
-    } else if (i == 79) {
-        return #char "_";
-    } else {
-        return #char "A" + cast(u8)i - 37;
-    }
+NO_WORD_NODE :: -1;
+
+// Sparse byte trie. The previous node stored 80 child indices (320 bytes) and
+// Bucket_Array allocated 4096 nodes at a time, so one typedef cost ~1.25 MiB per
+// C buffer. This node is small, supports UTF-8 identifiers, and grows on demand.
+Word_Node :: struct {
+    first_child: s32 = NO_WORD_NODE;
+    next_sibling: s32 = NO_WORD_NODE;
+    macro_sequence: u32;
+    flags: Word_Flags;
+    character: u8;
 }
 
-define_word :: (using buffer: *Buffer, w: string, f: Word_Flags) {
-    node := *word_tree;
-    for w {
-
-        char_index := az_char_index(it);
-        if char_index == -1  break;
-
-
-        if (node.next[char_index] == 0xffffffff) {
-            node.next[char_index] = xx (word_node_buffer.count & 0x00ffffff);
-            _, w := bucket_array_add(*word_node_buffer, .{});
-            w.* = .{};
-            assert(w.next[0] == 0xffffffff);
-        }
-
-        index_in_buffer := node.next[char_index] & 0x00ffffff;
-        node = *buffer.word_node_buffer[index_in_buffer];
-    }
-
-    // Null terminate
-    if node.next[0] == 0xffffffff {
-        node.next[0] = xx (word_node_buffer.count);
-        _, w := bucket_array_add(*word_node_buffer, .{});
-        w.* = .{};
-        assert(w.next[0] == 0xffffffff);
-    }
-
-    // Add flags on null terminator
-    node.next[0] |= (((cast(u32)f) << 24) & 0xff000000);
+User_Type_Include :: struct {
+    path: string;
+    buffer_index: s64 = -1;
+    buffer: *Buffer;
+    resolution_generation: u64;
+    macro_sequence: u32;
 }
-get_word_definition :: (using buffer: *Buffer, word: string, buffer_index_stack: *[..]s64 = null) -> Word_Flags {
-    if word.count == 0 return .undefined;
-    if !word return .undefined;
 
-    if (!buffer_index_stack)
-        buffer_index_stack = New([..]s64,,temp);
+User_Type_Lookup_Context :: struct {
+    buffers: [..] *Buffer;
+    macro_states: [..] C_Macro_State;
+    macro_status: [..] u8;  // 0 = unseen, 1 = visiting, 2 = complete
+    macro_cache: [64] C_Macro_Cache_Entry;
+    buffer_table_generation: u64;
+    direct_include_count: s64 = -1;
+    included_root_bytes: u64;
+    macro_depth: s32;
+}
 
-    c := word.data[0];
+C_Macro_State :: enum u8 {
+    untouched;
+    defined;
+    undefined;
+}
 
-    node := *word_tree;
-    full_match := true;
+C_Macro_Cache_Entry :: struct {
+    word: string;
+    hash: u64;
+    preprocessor_sequence: u32;
+    state: C_Macro_State;
+    imported_flags: Word_Flags;
+}
+
+hash_user_type_name :: (name: string, discriminator: u64) -> u64 {
+    // Keep this overflow-free: checked debug builds trap on the modular
+    // multiplication used by FNV-style hashes.
+    hash: u64 = 0x9e3779b97f4a7c15 ^ discriminator;
+    for name {
+        hash ^= cast(u64) it;
+        hash = (hash << 7) | (hash >> 57);
+        hash ^= hash >> 23;
+    }
+    return hash;
+}
+
+reset_user_type_index :: (using buffer: *Buffer) {
+    for included_buffers free(it.path,, allocator = focus_allocator);
+    reset_keeping_memory(*included_buffers);
+    reset_keeping_memory(*word_nodes);
+    user_type_signature = 0;
+    word_root_bytes = 0;
+    c_preprocessor_sequence = 0;
+    uses_c_user_type_highlighting = false;
+    c_reset_semantic_index(buffer);
+}
+
+free_user_type_index :: (using buffer: *Buffer) {
+    for included_buffers free(it.path,, allocator = focus_allocator);
+    reset(*included_buffers);
+    reset(*word_nodes);
+    user_type_signature = 0;
+    word_root_bytes = 0;
+    c_preprocessor_sequence = 0;
+    uses_c_user_type_highlighting = false;
+    c_free_semantic_index(buffer);
+}
+
+find_word_child :: inline (nodes: Array(Word_Node), parent_index: s32, character: u8) -> s32 {
+    child_index := nodes[parent_index].first_child;
+    while child_index != NO_WORD_NODE {
+        child := nodes[child_index];
+        if child.character == character return child_index;
+        child_index = child.next_sibling;
+    }
+    return NO_WORD_NODE;
+}
+
+find_word_node_index :: inline (using buffer: *Buffer, word: string) -> s32 {
+    if !word || !word_nodes.count return NO_WORD_NODE;
+
+    root_mask := cast(u64) 1 << (word[0] & 63);
+    if !(word_root_bytes & root_mask) return NO_WORD_NODE;
+
+    node_index: s32 = 0;
     for word {
-        index := az_char_index(it);
-        if index == -1  return .undefined;
-        if node.next[index] == 0xffffffff {
-            full_match = false;
-            break;
-        }
-        index_in_buffer := node.next[index] & 0x00ffffff;
-        node = *buffer.word_node_buffer[index_in_buffer];
+        node_index = find_word_child(word_nodes, node_index, it);
+        if node_index == NO_WORD_NODE return NO_WORD_NODE;
     }
-
-    // If end right before null termination, this is a valid defined word.
-    if full_match && node.next[0] != 0xffffffff {
-        return cast(Word_Flags)((node.next[0] >> 24));
-    }
-
-    // If not found in buffer, see if in any included (and open) buffer
-    for included_buffer_indices {
-        if array_find(buffer_index_stack.*, it)
-            continue;
-        array_add(buffer_index_stack, it,, temp);
-
-        other_defn := get_word_definition(*open_buffers[it], word, buffer_index_stack);
-        if other_defn != .undefined
-            return other_defn;
-    }
-
-
-
-    return .undefined;
+    return node_index;
 }
-#import "Bucket_Array";
+
+define_word :: (using buffer: *Buffer, word: string, flags: Word_Flags) {
+    if !word || flags == .undefined return;
+
+    root_mask := cast(u64) 1 << (word[0] & 63);
+    word_root_bytes |= root_mask;
+
+    if !word_nodes.count add(*word_nodes, .{});  // root
+    node_index: s32 = 0;
+
+    for word {
+        child_index := find_word_child(word_nodes, node_index, it);
+        if child_index == NO_WORD_NODE {
+            child_index = word_nodes.count;
+            old_first_child := word_nodes[node_index].first_child;
+            add(*word_nodes, .{ character = it, next_sibling = old_first_child });
+            // Reacquire by index after add(), which may have reallocated the array.
+            word_nodes.data[node_index].first_child = child_index;
+        }
+        node_index = child_index;
+    }
+
+    old_flags := word_nodes[node_index].flags;
+    new_flags := flags & ~old_flags;
+    if new_flags {
+        word_nodes.data[node_index].flags |= new_flags;
+        user_type_signature ^= hash_user_type_name(word, cast(u64) new_flags);
+    }
+}
+
+undefine_word :: (using buffer: *Buffer, word: string, flags: Word_Flags) {
+    node_index := find_word_node_index(buffer, word);
+    if node_index == NO_WORD_NODE return;
+
+    removed_flags := word_nodes[node_index].flags & flags;
+    if removed_flags {
+        word_nodes.data[node_index].flags &= ~removed_flags;
+        user_type_signature ^= hash_user_type_name(word, cast(u64) removed_flags);
+    }
+}
+
+set_word_macro_sequence :: (using buffer: *Buffer, word: string, sequence: u32) {
+    node_index := find_word_node_index(buffer, word);
+    if node_index == NO_WORD_NODE return;
+
+    old_sequence := word_nodes[node_index].macro_sequence;
+    if old_sequence == sequence return;
+    if old_sequence {
+        user_type_signature ^= hash_user_type_name(word, 0xd1b54a32d192ed03 ^ cast(u64) old_sequence);
+    }
+    word_nodes.data[node_index].macro_sequence = sequence;
+    if sequence {
+        user_type_signature ^= hash_user_type_name(word, 0xd1b54a32d192ed03 ^ cast(u64) sequence);
+    }
+}
+
+next_c_preprocessor_sequence :: (using buffer: *Buffer) -> u32 {
+    c_preprocessor_sequence += 1;
+    if !c_preprocessor_sequence then c_preprocessor_sequence = 1;
+    return c_preprocessor_sequence;
+}
+
+get_local_word_definition :: (using buffer: *Buffer, word: string) -> Word_Flags {
+    node_index := find_word_node_index(buffer, word);
+    if node_index == NO_WORD_NODE return .undefined;
+    return word_nodes[node_index].flags;
+}
+
+resolve_user_type_include :: (include: *User_Type_Include) -> *Buffer {
+    if include.buffer_index >= 0 && include.buffer_index < open_buffers.count {
+        candidate := *open_buffers[include.buffer_index];
+        if candidate == include.buffer && !candidate.deleted {
+            include.resolution_generation = user_type_buffer_table_generation;
+            return candidate;
+        }
+    }
+
+    include.buffer_index = -1;
+    include.buffer = null;
+    if include.resolution_generation == user_type_buffer_table_generation return null;
+
+    lock(*open_buffers_lock);
+    found, buffer_index := table_find(*buffers_table, include.path);
+    if found && !open_buffers[buffer_index].deleted {
+        include.buffer_index = buffer_index;
+        include.buffer = *open_buffers[buffer_index];
+    }
+    include.resolution_generation = user_type_buffer_table_generation;
+    unlock(*open_buffers_lock);
+    return include.buffer;
+}
+
+note_user_type_buffer_table_changed :: () {
+    user_type_buffer_table_generation += 1;
+    if !user_type_buffer_table_generation then user_type_buffer_table_generation = 1;
+}
+
+set_buffer_deleted :: (buffer: *Buffer, deleted: bool) {
+    if buffer.deleted == deleted return;
+    buffer.deleted = deleted;
+    note_user_type_buffer_table_changed();
+    if workspace_scan_complete then invalidate_user_type_dependents(buffer);
+}
+
+add_user_type_include :: (using buffer: *Buffer, absolute_path: string, macro_sequence: u32) {
+    if !absolute_path return;
+    for * include : included_buffers {
+        if platform_path_equals(include.path, absolute_path) {
+            user_type_signature ^= hash_user_type_name(absolute_path, 0x9e3779b97f4a7c15 ^ cast(u64) include.macro_sequence);
+            include.macro_sequence = macro_sequence;
+            user_type_signature ^= hash_user_type_name(absolute_path, 0x9e3779b97f4a7c15 ^ cast(u64) include.macro_sequence);
+            return;
+        }
+    }
+
+    include: User_Type_Include;
+    include.path = copy_string(absolute_path,, allocator = focus_allocator);
+    include.macro_sequence = macro_sequence;
+    add(*included_buffers, include);
+    user_type_signature ^= hash_user_type_name(absolute_path, 0x9e3779b97f4a7c15 ^ cast(u64) macro_sequence);
+
+    // During the parallel workspace scan the table is still changing, so paths
+    // are resolved once all files have been published. Outside scanning, resolve
+    // immediately so newly opened headers work without a workspace reload.
+    if workspace_scan_complete {
+        resolve_user_type_include(*included_buffers[included_buffers.count - 1]);
+    }
+}
+
+next_user_type_visit :: () -> u64 {
+    next_user_type_visit_generation += 1;
+    if !next_user_type_visit_generation {
+        // Practically unreachable, but keep wraparound from making old marks live.
+        for * open_buffer : open_buffers open_buffer.user_type_visit_generation = 0;
+        next_user_type_visit_generation = 1;
+    }
+    return next_user_type_visit_generation;
+}
+
+get_c_macro_state :: (buffer: *Buffer, word: string, lookup: *User_Type_Lookup_Context) -> C_Macro_State {
+    found, buffer_index := array_find(lookup.buffers, buffer);
+    if !found return .untouched;
+    if lookup.macro_status[buffer_index] == 2 return lookup.macro_states[buffer_index];
+    if lookup.macro_status[buffer_index] == 1 return .untouched;  // include cycle
+
+    // Memoization makes shared/diamond include graphs linear instead of
+    // revisiting the same subgraph once for every path. Keep a hard recursion
+    // limit as a last-resort guard against maliciously deep include chains.
+    if lookup.macro_depth >= 256 return .untouched;
+    lookup.macro_status[buffer_index] = 1;
+    lookup.macro_depth += 1;
+    defer lookup.macro_depth -= 1;
+
+    state := C_Macro_State.untouched;
+    latest_sequence: u32;
+    node_index := find_word_node_index(buffer, word);
+    if node_index != NO_WORD_NODE {
+        flags := buffer.word_nodes[node_index].flags;
+        if flags & .macro {
+            state = .defined;
+            latest_sequence = buffer.word_nodes[node_index].macro_sequence;
+        } else if flags & .macro_undefined {
+            state = .undefined;
+            latest_sequence = buffer.word_nodes[node_index].macro_sequence;
+        }
+    }
+
+    for * include : buffer.included_buffers {
+        // The closure pass resolved these edges for the current table generation.
+        child := include.buffer;
+        if !child continue;
+        child_state := get_c_macro_state(child, word, lookup);
+        if child_state != .untouched && include.macro_sequence >= latest_sequence {
+            state = child_state;
+            latest_sequence = include.macro_sequence;
+        }
+    }
+    lookup.macro_states[buffer_index] = state;
+    lookup.macro_status[buffer_index] = 2;
+    return state;
+}
+
+get_word_definition :: (buffer: *Buffer, word: string, lookup: *User_Type_Lookup_Context) -> Word_Flags {
+    if !word return .undefined;
+    local := get_local_word_definition(buffer, word);
+    result := local & (Word_Flags.type | Word_Flags.enum_constant);
+    if !workspace_scan_complete || !buffer.included_buffers {
+        if local & .macro then result |= .macro;
+        return result;
+    }
+
+    if lookup.buffer_table_generation != user_type_buffer_table_generation ||
+       lookup.direct_include_count != buffer.included_buffers.count {
+        visit_generation := next_user_type_visit();
+
+        array_reset_keeping_memory(*lookup.buffers);
+        array_add(*lookup.buffers, buffer);
+        lookup.included_root_bytes = 0;
+        buffer.user_type_visit_generation = visit_generation;
+
+        lookup_index: s32 = 0;
+        while lookup_index < lookup.buffers.count {
+            current := lookup.buffers[lookup_index];
+            lookup_index += 1;
+
+            for * include : current.included_buffers {
+                child := resolve_user_type_include(include);
+                if !child || child.user_type_visit_generation == visit_generation continue;
+
+                child.user_type_visit_generation = visit_generation;
+                array_add(*lookup.buffers, child);
+                lookup.included_root_bytes |= child.word_root_bytes;
+            }
+        }
+        lookup.buffer_table_generation = user_type_buffer_table_generation;
+        lookup.direct_include_count = buffer.included_buffers.count;
+        for * cache_entry : lookup.macro_cache cache_entry.* = .{};
+    }
+
+    root_mask := cast(u64) 1 << (word[0] & 63);
+    if !(lookup.included_root_bytes & root_mask) {
+        if local & .macro then result |= .macro;
+        return result;
+    }
+
+    macro_hash := hash_user_type_name(word, 0xa0761d6478bd642f);
+    cache_index := cast(s32) (macro_hash & (lookup.macro_cache.count - 1));
+    cache_entry := *lookup.macro_cache[cache_index];
+    cache_hit := cache_entry.hash == macro_hash && cache_entry.word == word &&
+                 cache_entry.preprocessor_sequence == buffer.c_preprocessor_sequence;
+    if cache_hit {
+        result |= cache_entry.imported_flags;
+        if cache_entry.state == .defined then result |= .macro;
+        return result;
+    }
+
+    imported_flags := Word_Flags.undefined;
+    has_macro_event := cast(bool) (local & (Word_Flags.macro | Word_Flags.macro_undefined));
+    lookup_index: s32 = 1;
+    while lookup_index < lookup.buffers.count {
+        included := get_local_word_definition(lookup.buffers[lookup_index], word);
+        imported_flags |= included & (Word_Flags.type | Word_Flags.enum_constant);
+        if included & (Word_Flags.macro | Word_Flags.macro_undefined) then has_macro_event = true;
+        lookup_index += 1;
+    }
+
+    macro_state := C_Macro_State.untouched;
+    if has_macro_event {
+        array_resize(*lookup.macro_states, lookup.buffers.count, initialize = false);
+        array_resize(*lookup.macro_status, lookup.buffers.count, initialize = false);
+        memset(lookup.macro_status.data, 0, lookup.macro_status.count);
+        lookup.macro_depth = 0;
+        macro_state = get_c_macro_state(buffer, word, lookup);
+    }
+    cache_entry.word = word;
+    cache_entry.hash = macro_hash;
+    cache_entry.preprocessor_sequence = buffer.c_preprocessor_sequence;
+    cache_entry.state = macro_state;
+    cache_entry.imported_flags = imported_flags;
+
+    result |= imported_flags;
+    if macro_state == .defined then result |= .macro;
+    return result;
+}
+
+next_user_type_visit_generation: u64;
+user_type_buffer_table_generation: u64 = 1;
+
+resolve_all_user_type_includes :: () {
+    lock(*open_buffers_lock);
+    defer unlock(*open_buffers_lock);
+
+    for * buffer : open_buffers {
+        for * include : buffer.included_buffers {
+            include.buffer_index = -1;
+            include.buffer = null;
+            found, buffer_index := table_find(*buffers_table, include.path);
+            if found && !open_buffers[buffer_index].deleted {
+                include.buffer_index = buffer_index;
+                include.buffer = *open_buffers[buffer_index];
+            }
+            include.resolution_generation = user_type_buffer_table_generation;
+        }
+    }
+}
+
+invalidate_user_type_dependents :: (changed_buffer: *Buffer) {
+    auto_release_temp();
+    if rebuilding_workspace_user_types return;
+
+    // Walk reverse include edges so a changed header only recolors its actual
+    // transitive importers. Cycles are bounded by the visit generation.
+    visit_generation := next_user_type_visit();
+    dependents: [..] *Buffer;
+    dependents.allocator = temp;
+    array_add(*dependents, changed_buffer);
+    changed_buffer.user_type_visit_generation = visit_generation;
+
+    pending_candidates: [..] *Buffer;
+    pending_candidates.allocator = temp;
+    for * candidate : open_buffers {
+        if candidate != changed_buffer && !candidate.deleted && candidate.included_buffers.count > 0 {
+            array_add(*pending_candidates, candidate);
+        }
+    }
+
+    invalidated_any := false;
+    dependent_index: s32;
+    while dependent_index < dependents.count && pending_candidates.count > 0 {
+        dependency := dependents[dependent_index];
+        dependent_index += 1;
+
+        candidate_index: s32;
+        while candidate_index < pending_candidates.count {
+            candidate := pending_candidates[candidate_index];
+            directly_depends := false;
+            for include : candidate.included_buffers {
+                if include.resolution_generation == user_type_buffer_table_generation && include.buffer {
+                    directly_depends = include.buffer == dependency;
+                } else if include.buffer == dependency ||
+                          dependency.has_file && platform_path_equals(include.path, dependency.file.full_path) {
+                    directly_depends = true;
+                }
+                if directly_depends break;
+            }
+            if !directly_depends {
+                candidate_index += 1;
+                continue;
+            }
+
+            candidate.user_type_visit_generation = visit_generation;
+            array_add(*dependents, candidate);
+            pending_candidates[candidate_index] = pending_candidates[pending_candidates.count - 1];
+            pending_candidates.count -= 1;
+            if candidate.uses_c_user_type_highlighting {
+                candidate.needs_tokenizing = true;
+                invalidated_any = true;
+            }
+        }
+    }
+    if invalidated_any then redraw_requested = true;
+}
+
+finish_workspace_user_type_scan :: () {
+    rebuilding_workspace_user_types = true;
+    defer rebuilding_workspace_user_types = false;
+
+    // Worker tokenizers recorded stable include paths while cross-buffer reads
+    // were disabled. Resolve every edge once, then recolor lazily when a buffer
+    // is drawn instead of stalling the UI on a second workspace-wide token pass.
+    resolve_all_user_type_includes();
+    invalidated_any := false;
+    for * buffer : open_buffers {
+        has_resolved_include := false;
+        for include : buffer.included_buffers {
+            if include.buffer {
+                has_resolved_include = true;
+                break;
+            }
+        }
+        if buffer.uses_c_user_type_highlighting && has_resolved_include {
+            buffer.needs_tokenizing = true;
+            invalidated_any = true;
+        }
+    }
+    if invalidated_any then redraw_requested = true;
+}
+
+rebuilding_workspace_user_types := false;
 Buffer :: struct {
     bytes:       Array(u8);
     line_starts: Array(s32);       // real offsets of newlines in the bytes array
     tokens:      Array(Token_Type);     // we assign a token to each byte (even for multi-byte chars).
     regions:     Array(Buffer_Region); // for highlighting parts of buffer
 
-    word_tree: Word_Node;
-    word_node_buffer: Bucket_Array(Word_Node, 4096);
-    included_buffer_indices: Array(s64);
+    word_nodes: Array(Word_Node);
+    word_root_bytes: u64;
+    included_buffers: Array(User_Type_Include);
+    user_type_signature: u64;
+    user_type_visit_generation: u64;
+    c_preprocessor_sequence: u32;
+    uses_c_user_type_highlighting: bool;
+
+    c_symbols: Array(C_Symbol);
+    c_symbol_bucket_heads: Array(s32);
+    c_references: Array(C_Reference);
+    c_diagnostics: Array(C_Diagnostic);
+    c_analysis_revision: u64;
+    c_diagnostic_revision: u64;
+    c_compiler_edit_generation: u64;
+    c_compiler_active_work: *C_Compiler_Work;
+    c_semantic_edit_generation: u64;
+    c_semantic_active_work: *C_Semantic_Work;
 
     // @Memory: all of these are allocated on the heap, which is not great, but it works fine right now.
     // Eventually we'll want to revisit all this and make it not allocate as much.

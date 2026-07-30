@@ -1,4 +1,4 @@
-[25]  # Version number. Do not delete.
+[29]  # Version number. Do not delete.
 
 # Based on Everforest Hard colors from https://github.com/sainnhe/everforest.
 
@@ -16,7 +16,9 @@ search_result_inactive:                 95A99F55
 scrollbar:                              272E3319
 scrollbar_hover:                        484848FF
 scrollbar_background:                   4848484C
+
 cursor:                                 A7C080AA
+transparent_caret:                     FFFFFF55
 cursor_inactive:                        A7C080FF
 paste_animation:                        4F5B58FF
 splitter:                               2E383CFF
@@ -38,6 +40,7 @@ ui_error:                               E67E80FF
 ui_error_bright:                        FF0000FF
 ui_success:                             3C4841FF
 
+diagnostic_error_underline:             FF0000FF
 region_scope_export:                    1E2326FF
 region_scope_file:                      00000033
 region_scope_module:                    00000022
@@ -57,6 +60,12 @@ code_default:                           D3C6AAFF
 code_comment:                           7A8478FF
 code_type:                              E69875FF
 code_function:                          A7C080FF
+code_variable_global:                   A7C080FF
+code_variable_local:                    D3C6AAFF
+code_parameter:                         A7C080FF
+
+code_struct_member:                     D3C6AAFF
+code_completion_ghost:                  808080FF
 code_punctuation:                       7A8478FF
 code_operation:                         7A8478FF
 code_string_literal:                    83C092FF

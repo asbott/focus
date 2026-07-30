@@ -1,4 +1,4 @@
-[25]  # Version number. Do not delete.
+[29]  # Version number. Do not delete.
       # Based on VSCode Dark theme
 
 [colors]
@@ -15,7 +15,9 @@ search_result_inactive:                 007ACCFF
 scrollbar:                              424242FF
 scrollbar_hover:                        4E4E4EFF
 scrollbar_background:                   3C3C3CFF
+
 cursor:                                 AEAFADFF
+transparent_caret:                     FFFFFF55
 cursor_inactive:                        A0A0A0FF
 paste_animation:                        5E5E5EFF
 splitter:                               252526FF
@@ -37,6 +39,7 @@ ui_error:                               F48771FF
 ui_error_bright:                        F48771FF
 ui_success:                             89D185FF
 
+diagnostic_error_underline:             F48771FF
 region_scope_export:                    1E1E1EFF
 region_scope_file:                      252526A0
 region_scope_module:                    252526A0
@@ -56,6 +59,12 @@ code_default:                           D4D4D4FF
 code_comment:                           6A9955FF
 code_type:                              4EC9B0FF
 code_function:                          DCDCAAFF
+code_variable_global:                   DCDCAAFF
+code_variable_local:                    9CDCFEFF
+code_parameter:                         DCDCAAFF
+
+code_struct_member:                     9CDCFEFF
+code_completion_ghost:                  808080FF
 code_punctuation:                       D4D4D4FF
 code_operation:                         D4D4D4FF
 code_string_literal:                    CE9178FF

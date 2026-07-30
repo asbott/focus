@@ -1,234 +1,572 @@
+C_Typedef_Candidate :: struct {
+    word: string;
+    start: s32;
+    paren_depth: s32;
+    follows_pointer: bool;
+}
+
+C_Typedef_Tracker :: struct {
+    active: bool;
+    base_brace_depth: s32;
+    base_paren_depth: s32;
+    base_bracket_depth: s32;
+    segment_index: s32;
+    saw_type_specifier: bool;
+    expect_aggregate_tag: bool;
+    attribute_pending: bool;
+    attribute_paren_depth: s32 = -1;
+    pointer_pending: bool;
+    top_level_count: s32;
+    last_top_level: C_Typedef_Candidate;
+    first_nested: C_Typedef_Candidate;
+    has_first_nested: bool;
+    first_pointer: C_Typedef_Candidate;
+    has_first_pointer: bool;
+}
+
+C_Enum_State :: struct {
+    depth: s32 = -1;
+    paren_depth: s32;
+    bracket_depth: s32;
+    expects_member: bool;
+}
+
+c_token_word :: inline (buffer: *Buffer, token: Token) -> string {
+    return .{ count = token.len, data = buffer.bytes.data + token.start };
+}
+
+c_is_attribute_introducer :: inline (word: string) -> bool {
+    return word == "__attribute__" || word == "__declspec";
+}
+
+c_is_pointer_declarator_modifier :: inline (word: string) -> bool {
+    return word == "__cdecl" || word == "__stdcall" || word == "__fastcall" ||
+           word == "__thiscall" || word == "__vectorcall" || word == "__ptr64" ||
+           word == "__unaligned" || word == "_Nonnull" || word == "_Nullable" ||
+           word == "restrict" || word == "__restrict" || word == "__restrict__" ||
+           word == "WINAPI" || word == "CALLBACK" || word == "APIENTRY" ||
+           word == "NTAPI" || word == "STDMETHODCALLTYPE";
+}
+
+c_is_identifier_token :: inline (token: Token) -> bool {
+    return token.type == .identifier || token.type == .keyword || token.type == .type ||
+           token.type == .value || token.type == .modifier;
+}
+
+begin_c_typedef :: (tracker: *C_Typedef_Tracker, brace_depth: s32, paren_depth: s32, bracket_depth: s32) {
+    tracker.active = true;
+    tracker.base_brace_depth = brace_depth;
+    tracker.base_paren_depth = paren_depth;
+    tracker.base_bracket_depth = bracket_depth;
+    tracker.segment_index = 0;
+    tracker.saw_type_specifier = false;
+    tracker.expect_aggregate_tag = false;
+    tracker.attribute_pending = false;
+    tracker.attribute_paren_depth = -1;
+    tracker.pointer_pending = false;
+    tracker.top_level_count = 0;
+    tracker.has_first_nested = false;
+    tracker.has_first_pointer = false;
+}
+
+finish_c_typedef_segment :: (buffer: *Buffer, tracker: *C_Typedef_Tracker) {
+    alias: C_Typedef_Candidate;
+    has_alias := false;
+
+    if tracker.top_level_count >= 2 {
+        // The first identifier can be a user-defined declaration specifier:
+        // typedef Existing_Type New_Type;
+        alias = tracker.last_top_level;
+        has_alias = true;
+    } else if tracker.top_level_count == 1 {
+        if tracker.saw_type_specifier || tracker.segment_index > 0 {
+            alias = tracker.last_top_level;
+            has_alias = true;
+        } else if tracker.has_first_pointer {
+            // typedef Existing_Type (*Callback)(int);
+            alias = tracker.first_pointer;
+            has_alias = true;
+        } else if tracker.has_first_nested {
+            alias = tracker.first_nested;
+            has_alias = true;
+        }
+    } else if tracker.has_first_pointer {
+        // typedef int (*Callback)(int);
+        alias = tracker.first_pointer;
+        has_alias = true;
+    } else if tracker.has_first_nested {
+        alias = tracker.first_nested;
+        has_alias = true;
+    }
+
+    if has_alias {
+        define_word(buffer, alias.word, .type);
+        memset(buffer.tokens.data + alias.start, xx Token_Type.type, alias.word.count);
+    }
+
+    tracker.top_level_count = 0;
+    tracker.has_first_nested = false;
+    tracker.has_first_pointer = false;
+    tracker.segment_index += 1;
+    tracker.expect_aggregate_tag = false;
+    tracker.attribute_pending = false;
+    tracker.attribute_paren_depth = -1;
+    tracker.pointer_pending = false;
+}
+
+record_c_include :: (buffer: *Buffer, include_token: Token, macro_sequence: u32) {
+    if !buffer.has_file return;
+
+    literal := c_token_word(buffer, include_token);
+    if literal.count < 2 return;
+
+    matched_delimiters :=
+        literal[0] == #char "\"" && literal[literal.count - 1] == #char "\"" ||
+        literal[0] == #char "<"  && literal[literal.count - 1] == #char ">";
+    if !matched_delimiters return;
+
+    relative_path := string.{ count = literal.count - 2, data = literal.data + 1 };
+    if !relative_path return;
+    // Backslash-newline pairs disappear before preprocessing tokens are
+    // interpreted, including when they occur inside a header name.
+    relative_path = replace(relative_path, "\\\r\n", "");
+    relative_path = replace(relative_path, "\\\n", "");
+
+    path_to_resolve := relative_path;
+    if !is_absolute_path(path_to_resolve) {
+        path_to_resolve = tprint("%1/%2", get_parent_dir_path(buffer.file.full_path), relative_path);
+    }
+    absolute_path, success := get_absolute_path(path_to_resolve,, temp);
+    if !success return;
+
+    path_overwrite_separators(absolute_path, #char "/");
+    add_user_type_include(buffer, absolute_path, macro_sequence);
+}
+
 tokenize_c :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buffer_Region {
+    auto_release_temp();
+    buffer.uses_c_user_type_highlighting = true;
     tokenizer := get_tokenizer(buffer, start_offset, count);
 
-    // Allocate temporary space for tracking one previous token
     tokenizer.prev_tokens[0] = New(Token,, temp);
-	tokenizer.prev_tokens[1] = New(Token,, temp);
+    prev_effective_type := Token_Type.invalid;
+    prev_was_preprocessor_line := false;
+    user_type_lookup: User_Type_Lookup_Context;
+    user_type_lookup.buffers.allocator = temp;
+    user_type_lookup.macro_states.allocator = temp;
+    user_type_lookup.macro_status.allocator = temp;
 
-	is_in_STR := false;
-	str_depth := 0;
-	is_typedeffing := false;
-	is_typedeffin_type_decl := false;
-	typedeffing_type_decl_brace_depth := 0;
-	type_ident_defn_depth := 0;
-	is_looking_for_type_ident := false;
-	is_looking_for_type_ident_or_defn := false;
-	is_modifying_type_ident := false;
-	modifying_type_ident_depth := 0;
-	type_kind := Keyword.kw_struct;
-	is_defining_enum := false;
-	is_macro_gooning := false;
+    typedef_tracker: C_Typedef_Tracker;
 
-	is_defining_vk_handle := false;
+    brace_depth: s32;
+    paren_depth: s32;
+    bracket_depth: s32;
+
+    aggregate_pending := false;
+    aggregate_kind := Keyword.kw_struct;
+    aggregate_tag_seen := false;
+    aggregate_attribute_pending := false;
+    aggregate_attribute_paren_depth: s32 = -1;
+
+    enum_depth: s32 = -1;
+    enum_paren_depth: s32;
+    enum_bracket_depth: s32;
+    enum_expects_member := false;
+    enum_stack: [16] C_Enum_State;
+    enum_stack_count: s32;
+
+    in_preprocessor_line := false;
+    preprocessor_directive: Token;
+    preprocessor_scan_offset: s32;
+    preprocessor_operand_seen := false;
+
+    in_rstr := false;
+    rstr_depth: s32;
+
+    vk_expects_type := false;
 
     while true {
-
         token := get_next_token(*tokenizer);
         if token.type == .eof break;
 
         using tokenizer;
-
         prev_token := cast(*Token) prev_tokens[0];
-		prevprev_token := cast(*Token) prev_tokens[1];
 
-        if token.type == .string_literal && prev_token.type == .directive && prev_token.directive == .di_include {
-		    token_string: string;
-            token_string.data = bytes.data + token.start;
-            token_string.count = token.len;
-
-
-
-            if token_string[0] == #char "\"" {
-                token_string.count -= 1;
-                token_string.data += 1;
+        if !in_rstr {
+            if in_preprocessor_line {
+                scan_offset := preprocessor_scan_offset;
+                while scan_offset < token.start {
+                    if buffer.bytes[scan_offset] == #char "\n" {
+                        previous := scan_offset - 1;
+                        if previous >= 0 && buffer.bytes[previous] == #char "\r" then previous -= 1;
+                        if previous < 0 || buffer.bytes[previous] != #char "\\" {
+                            in_preprocessor_line = false;
+                            break;
+                        }
+                    }
+                    scan_offset += 1;
+                }
+                if in_preprocessor_line then preprocessor_scan_offset = token.start;
             }
-            if token_string.count > 1 && token_string[token_string.count-1] == #char "\"" {
-                token_string.count -= 1;
+
+            // A '#' inside an existing replacement list is stringification or
+            // token pasting, not a nested directive.
+            starts_preprocessor_directive := !in_preprocessor_line &&
+                (token.type == .directive ||
+                 token.start < buffer.bytes.count && buffer.bytes[token.start] == #char "#");
+            if starts_preprocessor_directive {
+                in_preprocessor_line = true;
+                preprocessor_directive = token;
+                preprocessor_scan_offset = token.start + token.len;
+                preprocessor_operand_seen = false;
             }
+        }
 
+        // RSTR(...) is deliberately opaque to the C semantic state machine.
+        // Its outer parentheses remain punctuation; everything inside is string.
+        if in_rstr {
+            highlighted := token;
+            highlighted.type = .string_literal;
 
-            include_full_path := tprint("%1/%2", get_parent_dir_path(buffer.file.full_path), token_string);
-            abs_path, ok := replace(get_absolute_path(include_full_path,,temp), "\\", "/");
-
-            index, found := table_find(*buffers_table, abs_path);
-
-            if (found) {
-
-                max_depth :: 8;
-
-                add_recursive :: (parent: *Buffer, index: s64, depth: *int) {
-                    child := open_buffers[index];
-
-                    << depth += 1;
-                    if << depth < max_depth
-
-                    for child.included_buffer_indices {
-                        if array_find(to_view(parent.included_buffer_indices), it)
-                            continue;
-                        add(*parent.included_buffer_indices, it);
-
-                        add_recursive(parent, it, depth);
+            if token.type == .punctuation {
+                if token.punctuation == .l_paren {
+                    rstr_depth += 1;
+                } else if token.punctuation == .r_paren {
+                    if rstr_depth == 0 {
+                        in_rstr = false;
+                        highlighted.type = .punctuation;
+                    } else {
+                        rstr_depth -= 1;
                     }
                 }
-
-                add(*included_buffer_indices, index);
-                depth := 0;
-                add_recursive(buffer, index, *depth);
             }
 
-            token_string = trim(token_string);
-		}
-
-		if (is_looking_for_type_ident && (token.type == .identifier || token.type == .type) && type_ident_defn_depth == 0) {
-            is_looking_for_type_ident = false;
-            is_defining_vk_handle = false;
-
-            token_string: string;
-            token_string.data = bytes.data + token.start;
-            token_string.count = token.len;
-
-
-            define_word(buffer, token_string, .type);
-
-
-        } else if is_in_STR memset(tokens.data + token.start, xx Token_Type.string_literal, token.len);
-        else memset(tokens.data + token.start, xx token.type, token.len);
-		if token.type == .identifier {
-            defn := get_word_definition(buffer, string.{token.len, bytes.data + token.start});
-
-            if defn & .enum_constant
-                memset(tokens.data + token.start, xx Token_Type.enum_variant, token.len);
-            if defn & .type
-                memset(tokens.data + token.start, xx Token_Type.type, token.len);
-            if defn & .macro
-                memset(tokens.data + token.start, xx Token_Type.macro, token.len);
-		}
-
-
-
-        if token.type == .punctuation && token.punctuation == .l_paren {
-
-			if is_in_STR  str_depth += 1;
-			if (prev_token.type == .keyword && prev_token.keyword == .kw_RSTR)
-			{
-				is_in_STR = true;
-			}
+            highlight_token(buffer, highlighted);
+            prev_token.* = token;
+            prev_effective_type = highlighted.type;
+            prev_was_preprocessor_line = false;
+            continue;
         }
 
-        if (token.type == .keyword && (token.keyword == .kw_VK_DEFINE_HANDLE || token.keyword == .kw_VK_DEFINE_NON_DISPATCHABLE_HANDLE)) {
-            is_defining_vk_handle = true;
+        if !in_preprocessor_line &&
+           !prev_was_preprocessor_line &&
+           token.type == .punctuation && token.punctuation == .l_paren &&
+           prev_token.type == .keyword && prev_token.keyword == .kw_RSTR {
+            in_rstr = true;
+            rstr_depth = 0;
+            highlight_token(buffer, token);
+            prev_token.* = token;
+            prev_effective_type = token.type;
+            prev_was_preprocessor_line = false;
+            continue;
         }
 
-        if (is_defining_vk_handle && token.type == .punctuation && token.punctuation == .l_paren) {
-            is_looking_for_type_ident = true;
-        }
+        is_identifier_token := c_is_identifier_token(token);
+        word: string;
+        if is_identifier_token then word = c_token_word(buffer, token);
+        force_type_context := false;
+        force_enum_context := false;
 
-        if (token.type == .keyword && (token.keyword == .kw_struct || token.keyword == .kw_enum || token.keyword == .kw_union)) {
-            is_looking_for_type_ident_or_defn = true;
-            is_looking_for_type_ident = true;
-            type_kind = token.keyword;
+        is_line_splice := false;
+        if token.type == .punctuation && token.punctuation == .backslash {
+            next_offset := token.start + token.len;
+            if next_offset < buffer.bytes.count && buffer.bytes[next_offset] == #char "\r" then next_offset += 1;
+            is_line_splice = next_offset < buffer.bytes.count && buffer.bytes[next_offset] == #char "\n";
         }
-
-        if is_looking_for_type_ident_or_defn && token.type == .punctuation && token.punctuation == .l_brace {
-            is_looking_for_type_ident_or_defn = false;
-            is_looking_for_type_ident = false;
-            if (type_kind == .kw_enum)  is_defining_enum = true;
-        }
-        if is_looking_for_type_ident_or_defn && (token.type == .identifier) {
-            is_looking_for_type_ident_or_defn = false;
-        }
-
-        if (token.type == .keyword && token.keyword == .kw_typedef) {
-            is_typedeffing = true;
-        }
-
-        if (is_typedeffing && (token.type == .identifier || token.type == .type)) {
-            is_typedeffing = false;
-            is_looking_for_type_ident = true;
-        }
-        if (is_typedeffing && token.type == .keyword && (token.keyword == .kw_struct || token.keyword == .kw_enum || token.keyword == .kw_union)) {
-            is_typedeffin_type_decl = true;
-            is_typedeffing = false;
-            type_kind = token.keyword;
-        }
-
-        if (is_typedeffin_type_decl && token.type == .punctuation && token.punctuation == .l_brace) {
-            typedeffing_type_decl_brace_depth += 1;
-            if (type_kind == .kw_enum)  is_defining_enum = true;
-        }
-        if (is_typedeffin_type_decl && token.type == .punctuation && token.punctuation == .r_brace) {
-            typedeffing_type_decl_brace_depth -= 1;
-        }
-
-        if (is_typedeffin_type_decl && typedeffing_type_decl_brace_depth <= 1 && token.type == .punctuation && token.punctuation == .r_brace) {
-            is_typedeffin_type_decl = false;
-            is_typedeffing = false;
-            is_looking_for_type_ident = true;
-        }
-
-        if (is_looking_for_type_ident && !is_defining_vk_handle && token.type == .punctuation && token.punctuation == .l_paren) {
-            is_modifying_type_ident = true;
-            is_looking_for_type_ident = false;
-        }
-
-        if (is_modifying_type_ident && token.type == .punctuation && token.punctuation == .l_paren) {
-            modifying_type_ident_depth += 1;
-        }
-
-        if (is_modifying_type_ident && token.type == .punctuation && token.punctuation == .r_paren) {
-            modifying_type_ident_depth -= 1;
-            if (modifying_type_ident_depth == 0) {
-                is_modifying_type_ident = false;
-                is_looking_for_type_ident = true;
+        is_directive_token := token.start == preprocessor_directive.start;
+        if in_preprocessor_line && !is_directive_token && !preprocessor_operand_seen &&
+           token.type != .comment && token.type != .multiline_comment && !is_line_splice {
+            preprocessor_operand_seen = true;
+            if preprocessor_directive.type == .directive {
+                if is_identifier_token && preprocessor_directive.directive == .di_define {
+                    sequence := next_c_preprocessor_sequence(buffer);
+                    undefine_word(buffer, word, .macro_undefined);
+                    define_word(buffer, word, .macro);
+                    set_word_macro_sequence(buffer, word, sequence);
+                } else if is_identifier_token && preprocessor_directive.directive == .di_undef {
+                    sequence := next_c_preprocessor_sequence(buffer);
+                    undefine_word(buffer, word, .macro);
+                    define_word(buffer, word, .macro_undefined);
+                    set_word_macro_sequence(buffer, word, sequence);
+                } else if token.type == .string_literal && preprocessor_directive.directive == .di_include {
+                    sequence := next_c_preprocessor_sequence(buffer);
+                    record_c_include(buffer, token, sequence);
+                }
             }
         }
 
-        if is_defining_enum  && token.type == .punctuation && token.punctuation == .r_brace {
-            is_defining_enum = false;
+        if enum_depth >= 0 &&
+           !in_preprocessor_line &&
+           brace_depth == enum_depth &&
+           paren_depth == enum_paren_depth &&
+           bracket_depth == enum_bracket_depth &&
+           enum_expects_member && token.type == .identifier {
+            define_word(buffer, word, .enum_constant);
+            enum_expects_member = false;
+            force_enum_context = true;
         }
 
-        if is_looking_for_type_ident && token.type == .punctuation && token.punctuation == .l_brace {
-            type_ident_defn_depth += 1;
+        // Consume a pending struct/union/enum tag or body opener.
+        starts_enum_body := false;
+        if !in_preprocessor_line && aggregate_pending {
+            ignoring_aggregate_attribute := aggregate_attribute_paren_depth >= 0;
+            if aggregate_attribute_pending {
+                if token.type == .punctuation && token.punctuation == .l_paren {
+                    aggregate_attribute_pending = false;
+                    aggregate_attribute_paren_depth = paren_depth + 1;
+                    ignoring_aggregate_attribute = true;
+                } else if token.type != .comment && token.type != .multiline_comment {
+                    aggregate_attribute_pending = false;
+                }
+            }
 
-            if (type_kind == .kw_enum)  is_defining_enum = true;
+            if ignoring_aggregate_attribute {
+                if token.type == .punctuation && token.punctuation == .r_paren &&
+                   paren_depth == aggregate_attribute_paren_depth {
+                    aggregate_attribute_paren_depth = -1;
+                }
+            } else if token.type == .identifier && c_is_attribute_introducer(word) {
+                aggregate_attribute_pending = true;
+            } else if token.type == .identifier && !aggregate_tag_seen {
+                define_word(buffer, word, .type);
+                force_type_context = true;
+                if aggregate_kind == .kw_enum {
+                    aggregate_tag_seen = true;
+                } else {
+                    aggregate_pending = false;
+                    aggregate_attribute_pending = false;
+                    aggregate_attribute_paren_depth = -1;
+                }
+            } else if token.type == .punctuation && token.punctuation == .l_brace {
+                starts_enum_body = aggregate_kind == .kw_enum;
+                aggregate_pending = false;
+                aggregate_attribute_pending = false;
+                aggregate_attribute_paren_depth = -1;
+            } else if token.type == .comment || token.type == .multiline_comment {
+                // Comments do not interrupt "enum E { ... }".
+            } else if aggregate_kind == .kw_enum && aggregate_tag_seen &&
+                      (token.type == .type || token.type == .modifier ||
+                       token.type == .operation && token.operation == .colon) {
+                // C23 enum E : unsigned { ... }
+            } else {
+                aggregate_pending = false;
+                aggregate_attribute_pending = false;
+                aggregate_attribute_paren_depth = -1;
+            }
         }
-        if is_looking_for_type_ident && token.type == .punctuation && token.punctuation == .r_brace {
-            type_ident_defn_depth -= 1;
-            is_defining_enum = false;
-            if type_ident_defn_depth < 0  type_ident_defn_depth = 0;
+
+        if !in_preprocessor_line && aggregate_attribute_paren_depth < 0 &&
+           token.type == .keyword &&
+           (token.keyword == .kw_struct || token.keyword == .kw_union || token.keyword == .kw_enum) {
+            aggregate_pending = true;
+            aggregate_kind = token.keyword;
+            aggregate_tag_seen = false;
+            aggregate_attribute_pending = false;
+            aggregate_attribute_paren_depth = -1;
         }
 
-        if (is_defining_enum && token.type == .identifier) {
-            token_string: string;
-            token_string.data = bytes.data + token.start;
-            token_string.count = token.len;
-            define_word(buffer, token_string, .enum_constant);
-            memset(tokens.data + token.start, xx Token_Type.enum_variant, token.len);
+        // Track typedef declarators. Candidates inside aggregate bodies and array
+        // suffixes are ignored; each top-level comma ends one declarator.
+        if !in_preprocessor_line && typedef_tracker.active {
+            at_base_brace := brace_depth == typedef_tracker.base_brace_depth;
+            at_base_paren := paren_depth == typedef_tracker.base_paren_depth;
+            at_base_bracket := bracket_depth == typedef_tracker.base_bracket_depth;
+
+            ignoring_attribute := typedef_tracker.attribute_paren_depth >= 0;
+            if typedef_tracker.attribute_pending {
+                if token.type == .punctuation && token.punctuation == .l_paren {
+                    typedef_tracker.attribute_pending = false;
+                    typedef_tracker.attribute_paren_depth = paren_depth + 1;
+                    ignoring_attribute = true;
+                } else if token.type != .comment && token.type != .multiline_comment {
+                    typedef_tracker.attribute_pending = false;
+                }
+            }
+
+            ends_segment := token.type == .punctuation &&
+                            (token.punctuation == .comma || token.punctuation == .semicolon) &&
+                            at_base_brace && at_base_paren && at_base_bracket;
+
+            if ends_segment {
+                finish_c_typedef_segment(buffer, *typedef_tracker);
+                if token.punctuation == .semicolon then typedef_tracker.active = false;
+            } else {
+                if at_base_brace && !ignoring_attribute {
+                    if at_base_paren && at_base_bracket &&
+                       (token.type == .type || token.type == .modifier) {
+                        typedef_tracker.saw_type_specifier = true;
+                    }
+                    if token.type == .operation && token.operation == .asterisk && at_base_bracket {
+                        typedef_tracker.pointer_pending = true;
+                    }
+
+                    if token.type == .keyword &&
+                       (token.keyword == .kw_struct || token.keyword == .kw_union || token.keyword == .kw_enum) {
+                        typedef_tracker.saw_type_specifier = true;
+                        typedef_tracker.expect_aggregate_tag = true;
+                    } else if token.type == .identifier && c_is_attribute_introducer(word) {
+                        typedef_tracker.attribute_pending = true;
+                    } else if typedef_tracker.expect_aggregate_tag {
+                        if token.type == .identifier {
+                            typedef_tracker.expect_aggregate_tag = false;
+                        } else if token.type == .punctuation && token.punctuation == .l_brace {
+                            typedef_tracker.expect_aggregate_tag = false;
+                        }
+                    } else if token.type == .identifier && bracket_depth == typedef_tracker.base_bracket_depth {
+                        if typedef_tracker.pointer_pending && c_is_pointer_declarator_modifier(word) {
+                            // Calling convention/nullability annotations can sit
+                            // between '*' and the actual function-pointer name.
+                        } else {
+                            candidate := C_Typedef_Candidate.{
+                                word = word,
+                                start = token.start,
+                                paren_depth = paren_depth - typedef_tracker.base_paren_depth,
+                                follows_pointer = typedef_tracker.pointer_pending,
+                            };
+                            if candidate.paren_depth == 0 {
+                                typedef_tracker.top_level_count += 1;
+                                typedef_tracker.last_top_level = candidate;
+                            } else if !typedef_tracker.has_first_nested {
+                                typedef_tracker.first_nested = candidate;
+                                typedef_tracker.has_first_nested = true;
+                            }
+                            if candidate.follows_pointer && !typedef_tracker.has_first_pointer {
+                                typedef_tracker.first_pointer = candidate;
+                                typedef_tracker.has_first_pointer = true;
+                            }
+                            typedef_tracker.pointer_pending = false;
+                        }
+                    }
+                }
+            }
+
+            if typedef_tracker.attribute_paren_depth >= 0 &&
+               token.type == .punctuation && token.punctuation == .r_paren &&
+               paren_depth == typedef_tracker.attribute_paren_depth {
+                typedef_tracker.attribute_paren_depth = -1;
+            }
         }
 
-        if prev_token.type == .directive && prev_token.directive == .di_define {
-            token_string: string;
-            token_string.data = bytes.data + token.start;
-            token_string.count = token.len;
-            define_word(buffer, token_string, .macro);
-            memset(tokens.data + token.start, xx Token_Type.macro, token.len);
+        if !in_preprocessor_line && token.type == .keyword &&
+           token.keyword == .kw_typedef && !typedef_tracker.active {
+            begin_c_typedef(*typedef_tracker, brace_depth, paren_depth, bracket_depth);
         }
 
-        if token.type == .punctuation && token.punctuation == .r_paren {
-			if is_in_STR {
-				if str_depth == 0 {
-					is_in_STR = false;
-				} else {
-					str_depth -= 1;
-				}
-			}
+        // Vulkan's handle declaration macros name a type in their first argument.
+        if !in_preprocessor_line && vk_expects_type {
+            if token.type == .identifier {
+                define_word(buffer, word, .type);
+                force_type_context = true;
+                vk_expects_type = false;
+            } else if token.type == .punctuation && token.punctuation == .r_paren {
+                vk_expects_type = false;
+            }
+        }
+        if !in_preprocessor_line &&
+           !prev_was_preprocessor_line &&
+           token.type == .punctuation && token.punctuation == .l_paren &&
+           prev_token.type == .keyword &&
+           (prev_token.keyword == .kw_VK_DEFINE_HANDLE ||
+            prev_token.keyword == .kw_VK_DEFINE_NON_DISPATCHABLE_HANDLE) {
+            vk_expects_type = true;
+        }
 
-			memset(tokens.data + token.start, xx Token_Type.punctuation, token.len);
-		}
+        effective_type := token.type;
+        if is_identifier_token {
+            if force_enum_context {
+                effective_type = .enum_variant;
+            } else if force_type_context {
+                effective_type = .type;
+            } else {
+                definition := get_word_definition(buffer, word, *user_type_lookup);
+                if definition & .macro {
+                    effective_type = .macro;
+                } else if token.type == .identifier && definition & .enum_constant {
+                    effective_type = .enum_variant;
+                } else if token.type == .identifier && definition & .type {
+                    effective_type = .type;
+                }
+            }
+        }
 
-		prevprev_token.* = prev_token.*;
-        prev_token.* = token;
+        highlighted := token;
+        highlighted.type = effective_type;
+        highlight_token(buffer, highlighted);
+
+        // Restore the upstream function highlighting, but do not overwrite a
+        // resolved type/macro/enum token used as a cast or macro invocation.
+        c_settings := ifx buffer.settings then buffer.settings else *config.settings;
+        if c_settings.c_parse_functions &&
+           token.type == .punctuation && token.punctuation == .l_paren &&
+           !prev_was_preprocessor_line &&
+           prev_effective_type == .identifier {
+            memset(tokens.data + prev_token.start, xx Token_Type.function, prev_token.len);
+        }
+
+        if enum_depth >= 0 &&
+           !in_preprocessor_line &&
+           token.type == .punctuation && token.punctuation == .comma &&
+           brace_depth == enum_depth &&
+           paren_depth == enum_paren_depth &&
+           bracket_depth == enum_bracket_depth {
+            enum_expects_member = true;
+        }
+
+        if !in_preprocessor_line && token.type == .punctuation {
+            if token.punctuation == .l_brace {
+                brace_depth += 1;
+                if starts_enum_body {
+                    if enum_depth < 0 || enum_stack_count < enum_stack.count {
+                        if enum_depth >= 0 {
+                            enum_stack[enum_stack_count] = .{
+                                depth = enum_depth,
+                                paren_depth = enum_paren_depth,
+                                bracket_depth = enum_bracket_depth,
+                                expects_member = enum_expects_member,
+                            };
+                            enum_stack_count += 1;
+                        }
+                        enum_depth = brace_depth;
+                        enum_paren_depth = paren_depth;
+                        enum_bracket_depth = bracket_depth;
+                        enum_expects_member = true;
+                    }
+                }
+            } else if token.punctuation == .r_brace {
+                if enum_depth == brace_depth {
+                    if enum_stack_count > 0 {
+                        enum_stack_count -= 1;
+                        previous_enum := enum_stack[enum_stack_count];
+                        enum_depth = previous_enum.depth;
+                        enum_paren_depth = previous_enum.paren_depth;
+                        enum_bracket_depth = previous_enum.bracket_depth;
+                        enum_expects_member = previous_enum.expects_member;
+                    } else {
+                        enum_depth = -1;
+                        enum_expects_member = false;
+                    }
+                }
+                brace_depth = max(brace_depth - 1, 0);
+            } else if token.punctuation == .l_paren {
+                paren_depth += 1;
+            } else if token.punctuation == .r_paren {
+                paren_depth = max(paren_depth - 1, 0);
+            } else if token.punctuation == .l_bracket {
+                bracket_depth += 1;
+            } else if token.punctuation == .r_bracket {
+                bracket_depth = max(bracket_depth - 1, 0);
+            }
+        }
+
+        if token.type != .comment && token.type != .multiline_comment &&
+           !(in_preprocessor_line && is_line_splice) {
+            prev_token.* = token;
+            prev_effective_type = effective_type;
+            prev_was_preprocessor_line = in_preprocessor_line;
+        }
     }
+
+    c_schedule_semantic_index(buffer);
 
     return .[];
 }
@@ -402,12 +740,38 @@ parse_less_than_or_include :: (using tokenizer: *Tokenizer, token: *Token) {
     if t >= max_t return;
 
     prev_token := cast(*Token) prev_tokens[0];
-    if prev_token.type == .directive && prev_token.directive == .di_include {
+    include_is_on_logical_line := prev_token.type == .directive && prev_token.directive == .di_include;
+    if include_is_on_logical_line {
+        gap := buf.data + prev_token.start + prev_token.len;
+        while gap < start_t {
+            if gap.* == #char "\n" {
+                previous := gap - 1;
+                if previous >= buf.data && previous.* == #char "\r" then previous -= 1;
+                if previous < buf.data || previous.* != #char "\\" {
+                    include_is_on_logical_line = false;
+                    break;
+                }
+            }
+            gap += 1;
+        }
+    }
+    if include_is_on_logical_line {
         // Parse an #include <...> statement
         token.type = .string_literal;
-        while t < max_t && t.* != #char "\n" && t.* != #char ">"  t += 1;
-        if t >= max_t return;
-        t += 1;
+        while t < max_t && t.* != #char "\n" && t.* != #char ">" {
+            if t.* == #char "\\" && t + 1 < max_t {
+                if <<(t + 1) == #char "\n" {
+                    t += 2;
+                    continue;
+                }
+                if <<(t + 1) == #char "\r" && t + 2 < max_t && <<(t + 2) == #char "\n" {
+                    t += 3;
+                    continue;
+                }
+            }
+            t += 1;
+        }
+        if t < max_t && t.* == #char ">" then t += 1;
         return;
     }
 
@@ -453,7 +817,7 @@ parse_directive :: (using tokenizer: *Tokenizer, token: *Token) {
     token.type = .identifier;
 
     t += 1;
-    eat_white_space(tokenizer);  // there may be spaces between the # and the name
+    eat_white_space(tokenizer, only_until_newline = true);  // there may be spaces between the # and the name
     if t < max_t && !ascii_is_alpha(<<t) return;
 
     directive_str := read_identifier_string(tokenizer);
@@ -476,13 +840,23 @@ parse_string_literal :: (using tokenizer: *Tokenizer, token: *Token) {
 
     t += 1;
     while t < max_t && t.* != #char "\n" {
+        if t.* == #char "\\" && t + 1 < max_t {
+            if <<(t + 1) == #char "\n" {
+                t += 2;
+                escape_seen = false;
+                continue;
+            }
+            if <<(t + 1) == #char "\r" && t + 2 < max_t && <<(t + 2) == #char "\n" {
+                t += 3;
+                escape_seen = false;
+                continue;
+            }
+        }
         if <<t == #char "\"" && !escape_seen break;
         escape_seen = !escape_seen && <<t == #char "\\";
         t += 1;
     }
-    if t >= max_t return;
-
-    t += 1;
+    if t < max_t && <<t == #char "\"" then t += 1;
 }
 
 parse_char_literal :: (using tokenizer: *Tokenizer, token: *Token) {
@@ -639,7 +1013,7 @@ TYPE_KEYWORDS :: string.[
     "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "int_least8_t", "int_least16_t",
     "int_least32_t", "int_least64_t", "uint_least8_t", "uint_least16_t", "uint_least32_t", "uint_least64_t", "int_fast8_t",
     "int_fast16_t", "int_fast32_t", "int_fast64_t", "uint_fast8_t", "uint_fast16_t", "uint_fast32_t", "uint_fast64_t", "intptr_t",
-    "uintptr_t", "intmax_t", "uintmax_t", "wint_t", "size_t", "ptrdiff_t", "sig_atomic_t", "time_t", "clock_t", "bool", "u8", "s8", "u16", "s16", "u32", "s32", "u64", "s64", "sys_int", "sys_uint", "uint8", "int8", "uint16", "int16", "uint32", "int32", "uint64", "int64"
+    "uintptr_t", "intmax_t", "uintmax_t", "wint_t", "size_t", "ssize_t", "ptrdiff_t", "sig_atomic_t", "time_t", "clock_t", "bool", "u8", "s8", "u16", "s16", "u32", "s32", "u64", "s64", "sys_int", "sys_uint", "uint8", "int8", "uint16", "int16", "uint32", "int32", "uint64", "int64"
 ];
 
 VALUE_KEYWORDS :: string.[
@@ -647,7 +1021,7 @@ VALUE_KEYWORDS :: string.[
 ];
 
 MODIFIER_KEYWORDS :: string.[
-    "const", "constexpr", "extern", "register", "signed", "static", "unsigned", "volatile", "thread_local", "_Thread_local",
+    "const", "constexpr", "extern", "register", "restrict", "signed", "static", "unsigned", "volatile", "thread_local", "_Thread_local",
 ];
 
 DIRECTIVES :: string.[

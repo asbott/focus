@@ -1,4 +1,4 @@
-[25]  # Version number. Do not delete.
+[29]  # Version number. Do not delete.
 
 [colors]
 background0:                            040608FF
@@ -14,7 +14,9 @@ search_result_inactive:                 CF447736
 scrollbar:                              CC338227
 scrollbar_hover:                        CC33827F
 scrollbar_background:                   2B10104C
+
 cursor:                                 FF4D40FF
+transparent_caret:                     FFFFFF55
 cursor_inactive:                        196666FF
 paste_animation:                        491C1CFF
 splitter:                               3D0F0FFF
@@ -35,6 +37,7 @@ ui_error:                               772222FF
 ui_error_bright:                        FF0000FF
 ui_success:                             227722FF
 
+diagnostic_error_underline:             FF0000FF
 region_scope_export:                    040608FF
 region_scope_file:                      050E14FF
 region_scope_module:                    170707FF
@@ -54,6 +57,12 @@ code_default:                           B4E7FFFF
 code_comment:                           605B78FF
 code_type:                              A62E50FF
 code_function:                          CB5D7DFF
+code_variable_global:                   CB5D7DFF
+code_variable_local:                    F0C5C7FF
+code_parameter:                         CB5D7DFF
+
+code_struct_member:                     F0C5C7FF
+code_completion_ghost:                  808080FF
 code_punctuation:                       D1A788FF
 code_operation:                         D6783EFF
 code_string_literal:                    B3495DFF

@@ -299,7 +299,13 @@ DONE
             // Maybe print a heading
             for added : ADDED_KEYBINDS {
                 if added.subsection != subsection continue;
-                if !table_contains(*config_info.keybinds_present, tprint("%_%", subsection, added.action)) && valid_version(added.version, config_info.version) {
+                key_combo := ifx OS == .MACOS then added.key_combo_mac else added.key_combo;
+                force_combo_presence := (added.version == 28 && added.action == "cursor_go_back") ||
+                                        (added.version == 29 && (added.action == "cursor_go_forward" || added.action == "redo"));
+                already_present := ifx force_combo_presence
+                                   then contains(cast(string)modified_data, key_combo)
+                                   else table_contains(*config_info.keybinds_present, tprint("%_%", subsection, added.action));
+                if !already_present && valid_version(added.version, config_info.version) {
                     heading := tprint("\n# Added after migration to version [%]\n", CURRENT_CONFIG_VERSION);
                     array_insert_bytes_at(*modified_data, insert_offset + inserted_bytes, cast([]u8) heading);
                     inserted_bytes += heading.count;
@@ -309,9 +315,13 @@ DONE
 
             for added : ADDED_KEYBINDS {
                 if added.subsection != subsection continue;
-                if !table_contains(*config_info.keybinds_present, tprint("%_%", subsection, added.action)) && valid_version(added.version, config_info.version) {
-                    key_combo := added.key_combo;
-                    if OS == .MACOS then key_combo = added.key_combo_mac;
+                key_combo := ifx OS == .MACOS then added.key_combo_mac else added.key_combo;
+                force_combo_presence := (added.version == 28 && added.action == "cursor_go_back") ||
+                                        (added.version == 29 && (added.action == "cursor_go_forward" || added.action == "redo"));
+                already_present := ifx force_combo_presence
+                                   then contains(cast(string)modified_data, key_combo)
+                                   else table_contains(*config_info.keybinds_present, tprint("%_%", subsection, added.action));
+                if !already_present && valid_version(added.version, config_info.version) {
                     padding := get_tmp_spaces(KEYBINDS_INDENT - key_combo.count);
                     key_binding := tprint("%1%2%3\n", key_combo, padding, added.action);
                     array_insert_bytes_at(*modified_data, insert_offset + inserted_bytes, cast([]u8) key_binding);
@@ -376,8 +386,15 @@ DONE
                                 offset_difference += replace_line(*modified_data, line_start_offset, "");
                             } else {
                                 // Renamed setting
-                                indent  := cast(s64) (setting_value.data - setting_name.data);
-                                padding := get_tmp_spaces(indent - setting.new_name.count - 1);
+                                // Empty settings (often used to mean "no extra
+                                // arguments") have no value pointer from the
+                                // superficial parser. Preserve the old column
+                                // when possible, otherwise use the normal
+                                // settings column and always leave a separator.
+                                indent := ifx setting_value
+                                          then cast(s64) (setting_value.data - setting_name.data)
+                                          else cast(s64) SETTING_VALUES_INDENT;
+                                padding := get_tmp_spaces(max(indent - setting.new_name.count - 1, 1));
                                 comment := ifx setting.comment then tprint("  # %", setting.comment) else "";
 
                                 value := setting_value;
@@ -533,6 +550,18 @@ ADDED_SETTINGS :: Added_Setting.[
     .{ 24, "show_tab_characters_in_selection",                   "true" },
 
     .{ 25, "line_endings",                                       "preserve  # options: lf, crlf, preserve" },
+
+    .{ 26, "smooth_scrolling_keys",                              "true" },
+
+    .{ 27, "c_parse_functions",                                  "true   # parse/highlight C functions" },
+    .{ 27, "c_parse_variables",                                  "true   # globals, locals, parameters, and verified struct members" },
+    .{ 27, "c_goto_definition",                                  "true" },
+    .{ 27, "c_compiler_syntax_check",                            "true   # disable if the configured compiler is unavailable" },
+    .{ 27, "c_compiler_executable",                              "clang" },
+    .{ 27, "c_compiler_syntax_check_parameters",                 "-fsyntax-only -fno-color-diagnostics -ferror-limit=100 -x c -I ." },
+    .{ 27, "c_caret_history",                                    "true" },
+    .{ 27, "c_autocomplete",                                     "true" },
+    .{ 27, "c_bookmarks",                                        "true" },
 ];
 
 RENAMED_SETTINGS :: Renamed_Setting.[
@@ -548,6 +577,15 @@ RENAMED_SETTINGS :: Renamed_Setting.[
     .{ 17, "editor_history_size", "", .[], "" },  // removed
 
     .{ 22, "disable_file_open_close_animations", "", .[], "" },  // removed
+
+    // Version 27 was a short-lived development migration that defaulted this
+    // feature off, which made diagnostics appear broken after upgrading.
+    .{ 28, "c_compiler_syntax_check", "c_compiler_syntax_check", .[.{"false", "true"}], "disable if the configured compiler is unavailable" },
+
+    .{ 29, "c_clang_syntax_check",       "c_compiler_syntax_check",            .[], "disable if the configured compiler is unavailable" },
+    .{ 29, "c_clang_executable",         "c_compiler_executable",              .[], "" },
+    .{ 29, "c_clang_extra_parameters",   "c_compiler_syntax_check_parameters", .[.{"", "-fsyntax-only -fno-color-diagnostics -ferror-limit=100 -x c -I ."}], "compiler arguments; the temporary source file is appended automatically" },
+    .{ 29, "c_clang_debounce_milliseconds", "", .[], "" },
 ];
 
 SETTING_VALUES_INDENT :: #run -> int {
@@ -642,6 +680,15 @@ ADDED_COLORS :: Added_Color.[
     .{ 21, "code_deletion"  ,                  "",                       "E64D4DFF" },
     .{ 21, "region_addition",                  "",                       "2260224C" },
     .{ 21, "region_deletion",                  "",                       "7722224C" },
+
+    .{ 27, "code_variable_global",             "code_identifier",        "9CDCFEFF" },
+    .{ 27, "code_variable_local",              "code_identifier",        "BFC9DBFF" },
+    .{ 27, "code_parameter",                   "code_identifier",        "9CDCFEFF" },
+    .{ 27, "code_struct_member",               "code_identifier",        "C8C8C8FF" },
+    .{ 27, "diagnostic_error_underline",       "ui_error_bright",        "FF3333FF" },
+
+    .{ 28, "code_completion_ghost",            "",                       "808080FF" },
+    .{ 28, "transparent_caret",                "",                       "FFFFFF55" },
 ];
 
 
@@ -728,6 +775,14 @@ ADDED_KEYBINDS :: Added_Keybind.[
     .{ 18, "editors", "reopen_closed_editor",                       "Ctrl-Shift-T",                 "Cmd-Shift-T" },
 
     .{ 23, "editors", "keep_editor",                                "Ctrl-Alt-S Enter",             "Cmd-Opt-S Enter" },
+
+    .{ 28, "editors", "cursor_go_back",                             "Ctrl-Shift-Z",                 "Cmd-Shift-Z" },
+    .{ 28, "editors", "goto_definition",                            "F12",                          "F12" },
+    .{ 28, "editors", "autocomplete",                               "Ctrl-Tab",                     "Cmd-Tab" },
+    .{ 28, "editors", "new_bookmark",                               "Ctrl-K",                       "Cmd-K" },
+    .{ 28, "editors", "go_to_bookmark",                             "Ctrl-M",                       "Cmd-M" },
+    .{ 29, "editors", "cursor_go_forward",                          "Ctrl-Shift-Y",                 "Cmd-Shift-Y" },
+    .{ 29, "common",  "redo",                                       "Ctrl-Alt-Y",                   "Cmd-Opt-Y" },
 ];
 
 RENAMED_KEYBINDS :: Renamed_Keybind.[
@@ -987,6 +1042,7 @@ MIGRATE_BUILTIN_THEMES :: !NO_OUTPUT_BUILD && !DEBUG;
     run_test("Workspace migration from [3]",  "global.focus-config",  WORKSPACE_3,              WORKSPACE_3_EXPECTED);
     run_test("Settings migration from [1]",   "global.focus-config",  SETTINGS_1,               SETTINGS_1_EXPECTED);
     run_test("Settings migration from [2]",   "global.focus-config",  SETTINGS_2,               SETTINGS_2_EXPECTED);
+    run_test("Compiler settings from [28]",   "global.focus-config",  COMPILER_SETTINGS_28,     COMPILER_SETTINGS_28_EXPECTED);
     run_test("Project settings from [1]",     "project.focus-config", PROJECT_SETTINGS_1,       PROJECT_SETTINGS_1_EXPECTED);
     run_test("Project workspace from [3]",    "project.focus-config", PROJECT_WORKSPACE_3,      PROJECT_WORKSPACE_3_EXPECTED);
     run_test("Сolors from [1]",               "global.focus-config",  COLORS_1,                 COLORS_1_EXPECTED);
@@ -1270,6 +1326,27 @@ FOCUS_CONFIG
 
 // Test that settings are added and removed correctly
 
+COMPILER_SETTINGS_28 :: #string FOCUS_CONFIG
+[28]  # Version number. Do not delete.
+
+[[settings]]
+
+c_clang_syntax_check:                            true
+c_clang_executable:                              clang
+c_clang_extra_parameters:                        # intentionally empty
+c_clang_debounce_milliseconds:                   75
+FOCUS_CONFIG
+
+COMPILER_SETTINGS_28_EXPECTED :: #string FOCUS_CONFIG
+[!latest!]  # Version number. Do not delete.
+
+[[settings]]
+
+c_compiler_syntax_check:                         true  # disable if the configured compiler is unavailable
+c_compiler_executable:                           clang
+c_compiler_syntax_check_parameters:              -fsyntax-only -fno-color-diagnostics -ferror-limit=100 -x c -I .  # compiler arguments; the temporary source file is appended automatically
+FOCUS_CONFIG
+
 SETTINGS_1 :: #string FOCUS_CONFIG
 
 [1]  # Version number. Do not delete.
@@ -1351,6 +1428,7 @@ Ctrl-6                      switch_to_pane_6
 Ctrl-7                      switch_to_pane_7
 Ctrl-8                      switch_to_pane_8
 Ctrl-9                      switch_to_pane_9
+Ctrl-Alt-Y                  redo
 
 [[settings]]
 
@@ -1409,6 +1487,16 @@ closing_last_editor_should_exit_program:         false
 show_pane_numbers:                               false
 show_tab_characters_in_selection:                true
 line_endings:                                    preserve  # options: lf, crlf, preserve
+smooth_scrolling_keys:                           true
+c_parse_functions:                               true   # parse/highlight C functions
+c_parse_variables:                               true   # globals, locals, parameters, and verified struct members
+c_goto_definition:                               true
+c_compiler_syntax_check:                         true  # disable if the configured compiler is unavailable
+c_compiler_executable:                           clang
+c_compiler_syntax_check_parameters:              -fsyntax-only -fno-color-diagnostics -ferror-limit=100 -x c -I .
+c_caret_history:                                 true
+c_autocomplete:                                  true
+c_bookmarks:                                     true
 
 FOCUS_CONFIG
 
@@ -1503,6 +1591,7 @@ Ctrl-6                      switch_to_pane_6
 Ctrl-7                      switch_to_pane_7
 Ctrl-8                      switch_to_pane_8
 Ctrl-9                      switch_to_pane_9
+Ctrl-Alt-Y                  redo
 
 [[settings]]
 
@@ -1560,6 +1649,16 @@ closing_last_editor_should_exit_program:         false
 show_pane_numbers:                               false
 show_tab_characters_in_selection:                true
 line_endings:                                    preserve  # options: lf, crlf, preserve
+smooth_scrolling_keys:                           true
+c_parse_functions:                               true   # parse/highlight C functions
+c_parse_variables:                               true   # globals, locals, parameters, and verified struct members
+c_goto_definition:                               true
+c_compiler_syntax_check:                         true  # disable if the configured compiler is unavailable
+c_compiler_executable:                           clang
+c_compiler_syntax_check_parameters:              -fsyntax-only -fno-color-diagnostics -ferror-limit=100 -x c -I .
+c_caret_history:                                 true
+c_autocomplete:                                  true
+c_bookmarks:                                     true
 
 FOCUS_CONFIG
 
@@ -1636,6 +1735,7 @@ Ctrl-6                      switch_to_pane_6
 Ctrl-7                      switch_to_pane_7
 Ctrl-8                      switch_to_pane_8
 Ctrl-9                      switch_to_pane_9
+Ctrl-Alt-Y                  redo
 
 [[settings]]
 
@@ -1747,6 +1847,13 @@ code_addition:                          33B333FF
 code_deletion:                          E64D4DFF
 region_addition:                        2260224C
 region_deletion:                        7722224C
+code_variable_global:                   9CDCFEFF
+code_variable_local:                    BFC9DBFF
+code_parameter:                         9CDCFEFF
+code_struct_member:                     C8C8C8FF
+diagnostic_error_underline:             FF3333FF
+code_completion_ghost:                  808080FF
+transparent_caret:                      FFFFFF55
 
 FOCUS_CONFIG
 
@@ -1835,6 +1942,13 @@ code_addition:                          33B333FF
 code_deletion:                          E64D4DFF
 region_addition:                        2260224C
 region_deletion:                        7722224C
+code_variable_global:                   9CDCFEFF
+code_variable_local:                    BFC9DBFF
+code_parameter:                         9CDCFEFF
+code_struct_member:                     C8C8C8FF
+diagnostic_error_underline:             FF3333FF
+code_completion_ghost:                  808080FF
+transparent_caret:                      FFFFFF55
 
 FOCUS_CONFIG
 
@@ -1949,6 +2063,16 @@ closing_last_editor_should_exit_program:         false
 show_pane_numbers:                               false
 show_tab_characters_in_selection:                true
 line_endings:                                    preserve  # options: lf, crlf, preserve
+smooth_scrolling_keys:                           true
+c_parse_functions:                               true   # parse/highlight C functions
+c_parse_variables:                               true   # globals, locals, parameters, and verified struct members
+c_goto_definition:                               true
+c_compiler_syntax_check:                         true  # disable if the configured compiler is unavailable
+c_compiler_executable:                           clang
+c_compiler_syntax_check_parameters:              -fsyntax-only -fno-color-diagnostics -ferror-limit=100 -x c -I .
+c_caret_history:                                 true
+c_autocomplete:                                  true
+c_bookmarks:                                     true
 
 [[keymap]]
 # ...
@@ -2022,6 +2146,13 @@ code_addition:                          33B333FF
 code_deletion:                          E64D4DFF
 region_addition:                        2260224C
 region_deletion:                        7722224C
+code_variable_global:                   9CDCFEFF
+code_variable_local:                    BFC9DBFF
+code_parameter:                         9CDCFEFF
+code_struct_member:                     C8C8C8FF
+diagnostic_error_underline:             FF3333FF
+code_completion_ghost:                  808080FF
+transparent_caret:                      FFFFFF55
 
 FOCUS_CONFIG
 
@@ -2151,6 +2282,13 @@ code_addition:                          33B333FF
 code_deletion:                          E64D4DFF
 region_addition:                        2260224C
 region_deletion:                        7722224C
+code_variable_global:                   9CDCFEFF
+code_variable_local:                    BFC9DBFF
+code_parameter:                         9CDCFEFF
+code_struct_member:                     C8C8C8FF
+diagnostic_error_underline:             FF3333FF
+code_completion_ghost:                  808080FF
+transparent_caret:                      FFFFFF55
 
 [[keymap]]
 
@@ -2192,6 +2330,12 @@ Ctrl-Alt-D ArrowUp          duplicate_editor_top
 Ctrl-Alt-D ArrowDown        duplicate_editor_bottom
 Ctrl-Shift-T                reopen_closed_editor
 Ctrl-Alt-S Enter            keep_editor
+Ctrl-Shift-Z                cursor_go_back
+F12                         goto_definition
+Ctrl-Tab                    autocomplete
+Ctrl-K                      new_bookmark
+Ctrl-M                      go_to_bookmark
+Ctrl-Shift-Y                cursor_go_forward
 
 [open file dialog]
 Tab                         open_directory
@@ -2241,6 +2385,7 @@ Ctrl-6                      switch_to_pane_6
 Ctrl-7                      switch_to_pane_7
 Ctrl-8                      switch_to_pane_8
 Ctrl-9                      switch_to_pane_9
+Ctrl-Alt-Y                  redo
 
 FOCUS_CONFIG
 
@@ -2301,6 +2446,12 @@ Ctrl-Y                      move_selection_to_next_word
 {Shift}-Meta-ArrowRight     move_right_through_word
 {Shift}-Meta-Backspace      delete_left_through_word
 {Shift}-Meta-Delete         delete_right_through_word
+Ctrl-Shift-Z                cursor_go_back
+F12                         goto_definition
+Ctrl-Tab                    autocomplete
+Ctrl-K                      new_bookmark
+Ctrl-M                      go_to_bookmark
+Ctrl-Shift-Y                cursor_go_forward
 
 [open file dialog]
 Tab                         open_directory
@@ -2344,6 +2495,7 @@ Ctrl-6                      switch_to_pane_6
 Ctrl-7                      switch_to_pane_7
 Ctrl-8                      switch_to_pane_8
 Ctrl-9                      switch_to_pane_9
+Ctrl-Alt-Y                  redo
 
 [search dialog]
 Enter                       open_entry
@@ -2445,6 +2597,13 @@ code_addition:                          33B333FF
 code_deletion:                          E64D4DFF
 region_addition:                        2260224C
 region_deletion:                        7722224C
+code_variable_global:                   9CDCFEFF
+code_variable_local:                    BFC9DBFF
+code_parameter:                         9CDCFEFF
+code_struct_member:                     C8C8C8FF
+diagnostic_error_underline:             FF3333FF
+code_completion_ghost:                  808080FF
+transparent_caret:                      FFFFFF55
 
 FOCUS_CONFIG
 
@@ -2626,5 +2785,12 @@ code_addition:                          33B333FF
 code_deletion:                          E64D4DFF
 region_addition:                        2260224C
 region_deletion:                        7722224C
+code_variable_global:                   9CDCFEFF
+code_variable_local:                    BFC9DBFF
+code_parameter:                         9CDCFEFF
+code_struct_member:                     C8C8C8FF
+diagnostic_error_underline:             FF0000FF
+code_completion_ghost:                  808080FF
+transparent_caret:                      FFFFFF55
 
 FOCUS_CONFIG

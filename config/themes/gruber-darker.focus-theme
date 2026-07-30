@@ -1,4 +1,4 @@
-[25]  # Version number. Do not delete.
+[29]  # Version number. Do not delete.
 
 # Based on the gruber darker theme by Jason Blevins
 # https://github.com/rexim/gruber-darker-theme
@@ -16,7 +16,9 @@ search_result_inactive:                 95A99F26
 scrollbar:                              484848FF
 scrollbar_hover:                        484848FF
 scrollbar_background:                   4848484C
+
 cursor:                                 FFDD33FF
+transparent_caret:                     FFFFFF55
 cursor_inactive:                        FFDD3311
 paste_animation:                        484848FF
 splitter:                               1A1A1AFF
@@ -37,6 +39,7 @@ ui_error:                               772222FF
 ui_error_bright:                        FF0000FF
 ui_success:                             227722FF
 
+diagnostic_error_underline:             FF0000FF
 region_scope_export:                    181818FF
 region_scope_file:                      202020FF
 region_scope_module:                    222222FF
@@ -56,6 +59,12 @@ code_default:                           E4E4EFFF
 code_comment:                           CC8C3CFF
 code_type:                              95A99fFF
 code_function:                          E4E4EFFF
+code_variable_global:                   E4E4EFFF
+code_variable_local:                    BFC9DBFF
+code_parameter:                         E4E4EFFF
+
+code_struct_member:                     BFC9DBFF
+code_completion_ghost:                  808080FF
 code_punctuation:                       E4E4EFFF
 code_operation:                         E4E4EFFF
 code_string_literal:                    73C936FF

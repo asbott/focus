@@ -1,4 +1,8 @@
 main :: () {
+    #if C_LANGUAGE_FEATURE_TESTS {
+        c_run_language_feature_tests();
+        return;
+    }
     #if DEBUG && OS != .LINUX {
         UA :: #import "Unmapping_Allocator";
         context.allocator = UA.get_unmapping_allocator();
@@ -140,6 +144,8 @@ main :: () {
     if project_config.loaded then update_window_title();
 
     init_workspace();
+    bookmarks_load();
+    defer bookmarks_deinit();
     init_build_system();
 
     // This may generate window resize events if DPI/scaling settings need to be
@@ -308,6 +314,7 @@ main :: () {
                 case .kill_running_command_dialog;  handled = dialog_handle_event(*kill_running_command_dialog, event);
                 case .theme_dialog;                 handled = theme_dialog_handle_event(event);
                 case .language_dialog;              handled = language_dialog_handle_event(event);
+                case .bookmark_dialog;              handled = bookmark_dialog_handle_event(event);
             }
 
             if !handled {
@@ -340,6 +347,8 @@ main :: () {
         execute_deferred_actions();
 
         build_system_update();
+        c_semantic_update();
+        c_compiler_update();
         maybe_revert_temporary_theme();
         refresh_open_buffers();
 
@@ -348,6 +357,7 @@ main :: () {
         pointer_end_frame();
 
         maybe_save_cursor_history();
+        bookmarks_save_if_needed();
 
         reset_temporary_storage();
 
@@ -401,6 +411,8 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .show_troubleshooting_info;                        editors_show_troubleshooting_info(placement);       return true;
 
         case .go_to_line;                                       show_go_to_line_dialog();                           return true;
+        case .new_bookmark;                                     show_bookmark_dialog(.create);                      return true;
+        case .go_to_bookmark;                                   show_bookmark_dialog(.go_to);                       return true;
         case .create_new_file;                                  editors_create_new_file(placement);                 return true;
         case .create_new_file_in_side_pane;                     editors_create_new_file(.on_the_side);              return true;
 
@@ -418,8 +430,10 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .toggle_fullscreen;                                action_toggle_fullscreen();                         return true;
         case .toggle_status_bar;                                show_status_bar = !show_status_bar;                 return true;
 
-        case .cursor_go_back;                                   action_cursor_go_back();                            return true;
-        case .cursor_go_forward;                                action_cursor_go_forward();                         return true;
+        case .cursor_go_back;                                   if config.settings.c_caret_history then action_cursor_go_back();     return true;
+        case .cursor_go_forward;                                if config.settings.c_caret_history then action_cursor_go_forward();  return true;
+        case .goto_definition;                                  c_action_goto_definition();                         return true;
+        case .autocomplete;                                     c_action_autocomplete();                            return true;
 
         case .go_to_previous_buffer;                            action_go_to_previous_buffer(event);                return true;
         case .go_to_next_buffer;                                action_go_to_next_buffer(event);                    return true;
@@ -973,6 +987,7 @@ Active_Global_Widget :: enum {
     kill_running_command_dialog;
     theme_dialog;
     language_dialog;
+    bookmark_dialog;
 }
 
 Project_Dir :: struct {
@@ -1033,6 +1048,7 @@ focus_allocator: Allocator;
 #load "user_messages.jai";
 #load "deferred_actions.jai";
 #load "history.jai";
+#load "c_language_services.jai";
 
 #load "utils/array.jai";
 #load "utils/aho_corasick.jai";
@@ -1049,6 +1065,7 @@ focus_allocator: Allocator;
 #load "widgets/open_file_dialog.jai";
 #load "widgets/delete_file_dialog.jai";
 #load "widgets/go_to_line_dialog.jai";
+#load "widgets/bookmark_dialog.jai";
 #load "widgets/finder.jai";
 #load "widgets/unsaved_buffers.jai";
 #load "widgets/commands.jai";

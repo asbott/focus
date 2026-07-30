@@ -1,4 +1,4 @@
-[25]  # Version number. Do not delete.
+[29]  # Version number. Do not delete.
 
 # Based on the original Zenburn Vim theme:
 # https://github.com/jnurmine/Zenburn/blob/master/colors/zenburn.vim
@@ -16,7 +16,9 @@ search_result_inactive:                 95A99F55
 scrollbar:                              28282819
 scrollbar_hover:                        484848FF
 scrollbar_background:                   4848484C
+
 cursor:                                 8FAF9FFF
+transparent_caret:                     FFFFFF55
 cursor_inactive:                        8FAF9FFF
 paste_animation:                        304A3DFF
 splitter:                               2E3330FF
@@ -37,6 +39,7 @@ ui_error:                               772222FF
 ui_error_bright:                        FF0000FF
 ui_success:                             227722FF
 
+diagnostic_error_underline:             FF0000FF
 region_scope_export:                    3F3F3FFF
 region_scope_file:                      484848FF
 region_scope_module:                    292929FF
@@ -56,6 +59,12 @@ code_default:                           DCDCCCFF
 code_comment:                           7F9F7FFF
 code_type:                              DFDFBFFF
 code_function:                          EFEF8FFF
+code_variable_global:                   EFEF8FFF
+code_variable_local:                    BFC9DBFF
+code_parameter:                         EFEF8FFF
+
+code_struct_member:                     BFC9DBFF
+code_completion_ghost:                  808080FF
 code_punctuation:                       DCDCCCFF
 code_operation:                         F0EFD0FF
 code_string_literal:                    CC9393FF

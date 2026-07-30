@@ -1,4 +1,4 @@
-[25]  # Version number. Do not delete.
+[29]  # Version number. Do not delete.
       # (https://github.com/nanotech/jellybeans.vim)
 
 [colors]
@@ -15,7 +15,9 @@ search_result_inactive:                 8197BFFF
 scrollbar:                              606060FF
 scrollbar_hover:                        707070FF
 scrollbar_background:                   303030FF
+
 cursor:                                 FFFFAAFF
+transparent_caret:                     FFFFFF55
 cursor_inactive:                        606060FF
 paste_animation:                        606060FF
 splitter:                               1C1C1CFF
@@ -37,6 +39,7 @@ ui_error:                               E84F4FFF
 ui_error_bright:                        E84F4FFF
 ui_success:                             99AD6AFF
 
+diagnostic_error_underline:             E84F4FFF
 region_scope_export:                    151515FF
 region_scope_file:                      1C1C1CA0
 region_scope_module:                    1C1C1CA0
@@ -56,6 +59,12 @@ code_default:                           A8A8A8FF
 code_comment:                           888888FF
 code_type:                              8FBFDFFF
 code_function:                          FFC66DFF
+code_variable_global:                   FFC66DFF
+code_variable_local:                    A8A8A8FF
+code_parameter:                         FFC66DFF
+
+code_struct_member:                     A8A8A8FF
+code_completion_ghost:                  808080FF
 code_punctuation:                       888888FF
 code_operation:                         8197BFFF
 code_string_literal:                    99AD6AFF

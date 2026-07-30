@@ -204,6 +204,7 @@ map_name_to_color :: (name: string) -> Color {
         case "scrollbar_hover";                         return .SCROLLBAR_HOVER;
         case "scrollbar_background";                    return .SCROLLBAR_BACKGROUND;
         case "cursor";                                  return .CURSOR;
+        case "transparent_caret";                       return .TRANSPARENT_CARET;
         case "cursor_inactive";                         return .CURSOR_INACTIVE;
         case "cursor_line_highlight";                   return .CURSOR_LINE_HIGHLIGHT;
         case "paste_animation";                         return .PASTE_ANIMATION;
@@ -229,6 +230,7 @@ map_name_to_color :: (name: string) -> Color {
         case "ui_error";                                return .UI_ERROR;
         case "ui_error_bright";                         return .UI_ERROR_BRIGHT;
         case "ui_success";                              return .UI_SUCCESS;
+        case "diagnostic_error_underline";              return .DIAGNOSTIC_ERROR_UNDERLINE;
 
         case "region_scope_export";                     return .REGION_SCOPE_EXPORT;
         case "region_scope_file";                       return .REGION_SCOPE_FILE;

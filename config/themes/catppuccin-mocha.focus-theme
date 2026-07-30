@@ -1,4 +1,4 @@
-[25]  # Version number. Do not delete.
+[29]  # Version number. Do not delete.
       # (https://github.com/catppuccin/catppuccin)
 
 [colors]
@@ -15,7 +15,9 @@ search_result_inactive:                 89DCEB75
 scrollbar:                              9399b2FF
 scrollbar_hover:                        9399b2FF
 scrollbar_background:                   313244FF
+
 cursor:                                 B5A6A8FF
+transparent_caret:                     FFFFFF55
 cursor_inactive:                        585B70FF
 paste_animation:                        B5A6A8FF
 splitter:                               181825FF
@@ -37,6 +39,7 @@ ui_error:                               F38BA8FF
 ui_error_bright:                        F38BA8FF
 ui_success:                             A6E3A1FF
 
+diagnostic_error_underline:             F38BA8FF
 region_scope_export:                    1E1E2EFF
 region_scope_file:                      18182575
 region_scope_module:                    18182575
@@ -56,6 +59,12 @@ code_default:                           CDD6F4FF
 code_comment:                           9399B2FF
 code_type:                              F9E2AFFF
 code_function:                          89B4FAFF
+code_variable_global:                   89B4FAFF
+code_variable_local:                    CAD3F5FF
+code_parameter:                         89B4FAFF
+
+code_struct_member:                     CAD3F5FF
+code_completion_ghost:                  808080FF
 code_punctuation:                       939AB7FF
 code_operation:                         91D7E3FF
 code_string_literal:                    A6DA95FF

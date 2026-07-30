@@ -181,9 +181,14 @@ workspace_update :: () {
 
         num_jobs_completed += results.count;
         if num_jobs_completed >= num_jobs_to_complete {
-            workspace_scan_complete = true;
             shutdown(*scanner_thread_group);
             scanner_thread_group = Thread_Group.{};
+
+            // All buffers and their local definition indices are now stable.
+            // Enable cross-buffer lookup and recolor C buffers exactly once;
+            // doing this in every scan job was quadratic and racy.
+            workspace_scan_complete = true;
+            finish_workspace_user_type_scan();
 
             reset(*scan_memory_pool);
 
@@ -214,6 +219,7 @@ reload_workspace :: (automatic := false) {
     // Make sure no threads are running
     if file_list_thread_group.initted then shutdown(*file_list_thread_group);
     if scanner_thread_group.initted   then shutdown(*scanner_thread_group);
+    workspace_scan_complete = false;
 
     // Deinit things
     deinit_finder();
@@ -255,6 +261,7 @@ reload_workspace :: (automatic := false) {
 
             if buffer.has_file {
                 table_add(*buffers_table, copy_string(buffer.file.full_path), new_buffer_id);
+                note_user_type_buffer_table_changed();
                 start_watching_file_if_not_already(buffer.file.full_path);
                 buffer.file = get_file_info_from_full_path(buffer.file.full_path);  // refresh file info to reflect new project dirs
                 array_add(*buffers_to_refresh_from_disk, new_buffer_id);
@@ -402,12 +409,6 @@ directory_scan_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void
             }
             if !created then reload_from_disk(buffer_id, force = true);  // when refreshing workspace we want up to date data from disk
         }
-    }
-
-    lock(*open_buffers_lock);
-    defer unlock(*open_buffers_lock);
-    for *open_buffers {
-        retokenize(it);
     }
 
     return .CONTINUE;

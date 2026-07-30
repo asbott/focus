@@ -16,11 +16,15 @@ init_build_system :: () {
     thread_group = Thread_Group.{};  // in case we need to reinitialise it later
     init(*thread_group, num_threads = 1, group_proc = build_threadproc);
     start(*thread_group);
+    c_compiler_init();
+    c_semantic_init();
 }
 
 deinit_build_system :: () {
     assert(build_buffer_id >= 0 && build_editor_id >= 0, "Build system is not initialized");
     shutdown(*thread_group);
+    c_semantic_deinit();
+    c_compiler_deinit();
 
     // Assuming that the editor and the buffer will be cleaned up separately
     build_buffer_id = -1;
@@ -244,6 +248,7 @@ show_build_panel :: () {
         case .kill_running_command_dialog;      #through;
         case .finder;                           #through;
         case .go_to_line_dialog;                #through;
+        case .bookmark_dialog;                  #through;
         case .switch_to_project_dialog;         #through;
         case .theme_dialog;                     #through;
         case .language_dialog;                  #through;
